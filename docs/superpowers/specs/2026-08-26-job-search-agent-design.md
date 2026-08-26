@@ -25,7 +25,7 @@ Pipeline (TypeScript — deterministic, fixed step order)
    │
    ├─ Load candidate profile (Postgres)
    ├─ Load search configuration (Postgres/JSON)
-   ├─ JobSource.search() — Greenhouse first
+   ├─ JobSource.search() — Greenhouse (Phase A), then LinkedIn/Naukri (Phase B, §13)
    ├─ Normalize → canonical Job
    ├─ Deduplicate (sourceJobId / canonical URL / company+title+location)
    ├─ Hard filters (seniority exclusions, role-keyword inclusion)
@@ -44,7 +44,9 @@ CLI output: ranked matches
 
 The source requirements' own architecture diagram (its §4) shows OpenClaw sitting above all tools (search, analysis, profile), which would let an LLM-driven agent dynamically decide step order. But the same document also states "do NOT make the LLM responsible for the entire application" (its §3) and gives a fixed, deterministic step order while saying "do not create a complicated autonomous loop" (its §22). These two framings conflict if taken literally together.
 
-This design resolves it by scoping OpenClaw to the analysis step only: our TypeScript code drives the fixed pipeline end to end (search → normalize → dedupe → filter → score → persist), and OpenClaw is invoked narrowly, once per job that survives filtering, to produce the structured semantic match analysis. The weighted score formula always runs in our code, never inside the LLM call. This keeps the pipeline deterministic, testable, and debuggable, while still giving OpenClaw the one job that genuinely needs LLM judgment.
+This design resolves it by scoping OpenClaw's *LLM reasoning* to the analysis step only: our TypeScript code drives the fixed pipeline end to end (search → normalize → dedupe → filter → score → persist), and OpenClaw's tool-calling agent is invoked narrowly, once per job that survives filtering, to produce the structured semantic match analysis. The weighted score formula always runs in our code, never inside the LLM call. This keeps the pipeline deterministic, testable, and debuggable, while still giving OpenClaw the one job that genuinely needs LLM judgment.
+
+OpenClaw is used a second, separate way in this phase: as the browser-driving mechanism for the LinkedIn/Naukri source (§4). That usage has nothing to do with LLM reasoning — it's OpenClaw's browser capability navigating a real Chrome session to run a search and extract structured data, more analogous to Greenhouse's API call than to the analysis step. It gets its own narrow tool/capability scope (browser navigation + extraction only) independent of the analysis session's allowlist.
 
 ### OpenClaw — verified facts (2026-08-26)
 
@@ -55,7 +57,7 @@ OpenClaw (`github.com/openclaw/openclaw`, npm package `openclaw`, actively relea
 - **Cron**: listed as a first-class capability, usable for the later scheduled-run milestone.
 - **Sandboxing**: documented; tools run on-host by default unless sandboxing is configured.
 
-Not yet verified: whether OpenClaw can be invoked headlessly for a single scoped task (no channel, no persistent session) and cleanly exit with structured output, versus requiring its full Gateway/session model to be running. This is the one real architectural unknown and is deliberately sequenced as the first task of Milestone 1 (§10) — a cheap spike before the rest of the pipeline is built assuming a particular integration shape. If headless invocation proves awkward, the fallback is calling Ollama directly through the `LLMProvider` interface (§6) for this phase, and revisiting OpenClaw integration once its non-interactive story is clearer.
+Not yet verified: whether OpenClaw can be invoked headlessly for a single scoped task (no channel, no persistent session) and cleanly exit with structured output, versus requiring its full Gateway/session model to be running. This is the one real architectural unknown on the analysis side and is deliberately sequenced as an early Phase A task in Milestone 1 (§13) — a cheap spike before the rest of the pipeline is built assuming a particular integration shape. If headless invocation proves awkward, the fallback is calling Ollama directly through the `LLMProvider` interface (§6) for this phase, and revisiting OpenClaw integration once its non-interactive story is clearer.
 
 ## 3. Candidate Profile
 
@@ -71,11 +73,11 @@ Positioning: an early-career software engineer with production full-stack experi
 - **Lever** (`api.lever.co`) — same category, added once Greenhouse proves the pattern.
 - **Workable**, **company career pages** — tier 2, added opportunistically.
 
-### LinkedIn / Naukri — separate, deferred, explicitly risk-flagged
+### LinkedIn / Naukri — in scope for Milestone 1, sequenced after Greenhouse, explicitly risk-flagged
 
 The source requirements' own §11 says "do not automate authenticated LinkedIn activity" and lists a "LinkedIn login bot" under things not to build, scoping Tier 1 specifically to sources that don't require impersonating a browser session. Mid-brainstorm, the user asked for OpenClaw to also browse LinkedIn and Naukri for discovery — which conflicts with that constraint, since both platforms' Terms of Service prohibit automated access regardless of intent, and a scheduled/cron-driven pattern is exactly what anti-bot systems are built to catch (account suspension / IP ban risk).
 
-Resolution agreed with the user: if and when this is built, it runs as light-touch personal browsing through the user's own logged-in session, at low frequency, behaving like a human clicking through search results — no proxy rotation, no browser-fingerprint spoofing, no CAPTCHA-solving, no scraping-detection evasion of any kind. It is a **separate `JobSource` implementation**, sequenced strictly after the Greenhouse-based pipeline is proven end to end (matching the source requirements' own development strategy of one source first — its §34). It is explicitly out of Milestone 1's scope. This remains a real account/ToS risk even in its light-touch form; it is the user's own account and own risk tolerance, not mass scraping of third parties.
+Resolution agreed with the user: this is built as light-touch personal browsing through the user's own logged-in Chrome session, at low frequency, behaving like a human clicking through search results — no proxy rotation, no browser-fingerprint spoofing, no CAPTCHA-solving, no scraping-detection evasion of any kind. It is a **separate `JobSource` implementation**, driven by OpenClaw's browser capability rather than an HTTP client. Per the user's explicit direction, it is **in scope for Milestone 1** — but sequenced strictly after the Greenhouse-based pipeline is built and verified working end to end (§13), not built in parallel with it. That ordering exists so a stall or breakage in browser automation (the more fragile, higher-uncertainty piece) never leaves Milestone 1 with nothing working. This remains a real account/ToS risk even in its light-touch form; it is the user's own account and own risk tolerance, not mass scraping of third parties.
 
 ### Source abstraction
 
@@ -138,22 +140,26 @@ Explicitly not built this phase: automatic applications, LinkedIn/Naukri automat
 
 ## 10. Repository Structure
 
-Single TypeScript package — not a Turborepo/pnpm-workspace monorepo. The source requirements' broader tech list (Turborepo, pnpm workspaces, etc.) is aspirational for later phases; with exactly one deployable thing, a monorepo would be premature structure.
+Two sibling packages, not a formal Turborepo/pnpm-workspace monorepo (no shared build tooling needed yet — that would be premature structure for two independently-runnable things):
 
 ```
-src/
-  cli/           agent:run entrypoint
-  pipeline/      orchestrator, hard-filter rules, dedup, scoring formula
-  sources/       JobSource interface + greenhouse/ (lever/ added later)
-  agent/         OpenClaw integration: tool definitions, session invocation
-  llm/           LLMProvider interface + OllamaProvider
-  db/            Prisma schema + client
-  config/        candidate profile seed, search config
-prisma/
-  schema.prisma
+BE/                backend: pipeline, sources, agent, db — all of Milestone 1's work
+  src/
+    cli/           agent:run entrypoint
+    pipeline/      orchestrator, hard-filter rules, dedup, scoring formula
+    sources/       JobSource interface + greenhouse/, linkedin/, naukri/
+    agent/         OpenClaw integration: analysis tool definitions + browser-driven search
+    llm/           LLMProvider interface + OllamaProvider
+    db/            Prisma schema + client
+    config/        candidate profile seed, search config
+  prisma/
+    schema.prisma
+
+FE/                dashboard — already scaffolded (Vite + React 19 + TypeScript + oxlint)
+  src/             untouched until the dashboard milestone (§13); reserved, not built against yet
 ```
 
-Stack: Node.js LTS, TypeScript, Prisma, Zod, Jest (org standard), ESLint + Prettier. No Fastify in this phase — Milestone 1 is CLI-only, no HTTP server needed until the dashboard milestone.
+`FE/` was scaffolded by the user ahead of this plan and is left as-is for now — it becomes live in a future dashboard milestone, once there's pipeline data worth displaying (source requirements' §26), not during Milestone 1. `BE/` stack: Node.js LTS, TypeScript, Prisma, Zod, Jest (org standard), ESLint + Prettier. No Fastify yet — Milestone 1 is CLI-only, no HTTP server needed until BE needs to serve the dashboard.
 
 ## 11. Testing Strategy
 
@@ -165,17 +171,29 @@ Each pipeline stage is a typed async function; stages don't reach into each othe
 
 ## 13. Milestone 1 Scope
 
-1. Repo scaffold (TypeScript, ESLint/Prettier, Jest) on `feature/agent`.
+**Phase A — Greenhouse path (build and verify first):**
+
+1. Repo scaffold (`BE/`: TypeScript, ESLint/Prettier, Jest) on `feature/agent`.
 2. Prisma schema + migration (5 tables from §7) against the existing local Postgres.
 3. Candidate profile seeded from §3/source-requirements §6 JSON.
 4. Greenhouse `JobSource` (public API, no auth).
 5. Normalize + dedupe + hard filters (pure, unit-tested).
-6. Spike: confirm OpenClaw can run headlessly with a scoped tool allowlist against `ollama/llama3.1` and return valid structured JSON — de-risks the one real unknown (§2) before the rest of the pipeline depends on it.
+6. Spike: confirm OpenClaw can run headlessly with a scoped tool allowlist against `ollama/llama3.1` and return valid structured JSON — de-risks the analysis-side unknown (§2) before the rest of the pipeline depends on it.
 7. Wire the spike into the real `analyze_job` step; compute weighted score in our code.
 8. `npm run agent:run` CLI producing the ranked-matches output format (source requirements' §33).
 9. Verify: running the agent twice produces zero duplicate job rows.
 
-**Explicitly out of scope for Milestone 1**: Lever/Workable, LinkedIn/Naukri source, scheduler/cron, dashboard, applications-tracking UI (table exists, no UI).
+**Checkpoint:** Phase A must be working end to end — real Greenhouse jobs, real analysis, real ranked CLI output, no duplicate rows on rerun — before Phase B starts. This is a hard gate, not a suggestion: it guarantees Milestone 1 has something working even if browser automation turns out harder than expected.
+
+**Phase B — LinkedIn/Naukri browser-driven source:**
+
+10. Spike: confirm OpenClaw's browser capability can drive the user's own logged-in Chrome session, run a scoped job search, and extract structured job data (title, company, URL, location, description) — light-touch only (§4/§9): no proxy rotation, no fingerprint spoofing, no CAPTCHA-solving, human-like pace and low frequency.
+11. LinkedIn `JobSource` built on that spike.
+12. Naukri `JobSource`, same pattern.
+13. Both feed the same normalize → dedupe → hard-filter → analyze → score → persist path as Greenhouse — no source-specific branching downstream of normalization.
+14. Verify: running the agent twice across all three sources produces zero duplicate rows, and the same job cross-posted on Greenhouse and LinkedIn is still caught by the multi-signal dedup (§8).
+
+**Explicitly out of scope for Milestone 1**: Lever/Workable, scheduler/cron, dashboard (FE stays reserved, §10), applications-tracking UI (table exists, no UI).
 
 ## 14. Development Strategy
 
