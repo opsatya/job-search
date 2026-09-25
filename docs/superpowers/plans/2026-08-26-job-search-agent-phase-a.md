@@ -22,7 +22,7 @@
 - Salary is never a hard filter, and undisclosed salary must not be penalized — a below-floor or undisclosed-salary job can still surface; salary is a ranking input only, with a documented neutral default when absent (spec §8).
 - **`UNKNOWN` eligibility must never collapse into `true` or `false`.** The extraction prompt must produce `"UNKNOWN"` when the posting doesn't state eligibility, and every scoring function that reads eligibility must give `UNKNOWN` a distinct, documented partial-credit value — never the same as confirmed-eligible or confirmed-ineligible (spec §5, §8).
 - Anti-hallucination rule: the extraction step must never infer an undemonstrated skill from a related one (e.g. REST ≠ GraphQL, AWS ≠ Kubernetes/Terraform/EKS), and every fact it cannot support from the posting text is labeled `UNKNOWN` in `factLabels`, never guessed — this is a prompt-level instruction to the LLM call, not enforceable in TypeScript, but every analysis prompt (Task 12) must include it verbatim (spec §8, §9).
-- Job descriptions are untrusted content: passed into the analysis call strictly as tool-call/prompt *data*, never concatenated into anything resembling an instruction. The analysis session's tool allowlist is exactly `get_candidate_profile` + `analyze_job` — it must never be able to reach a write-capable tool (spec §9).
+- Job descriptions are untrusted content: passed into the analysis call strictly as prompt *data* (the candidate profile and job posting are embedded as text in the prompt), never concatenated into anything resembling an instruction. The analysis session's tool allowlist is **empty** — verified via Task 11's spike that the model never needs to call a tool for this task, it just returns JSON as its final text reply — it must never be able to reach `save_job` or any other tool (spec §9).
 - The seven category scores and the overall score run only in our TypeScript code, never inside the LLM call — the LLM returns extracted facts and qualitative reasoning only (spec §2, §8).
 - Postgres credentials via env, never committed (spec §9).
 - The candidate profile's source of truth is `BE/profile/candidate.yaml`, human-editable — not a hardcoded TypeScript constant (spec §3).
@@ -2205,9 +2205,9 @@ git commit -m "feat: persist jobs, extended job matches, and agent run stats"
 
 ---
 
-### Task 11: Spike — verify OpenClaw headless invocation
+### Task 11: Spike — verify OpenClaw headless invocation — **DONE (2026-09-25, commit 848816f)**
 
-Unchanged from the original plan — the spike itself tests a trivial echo tool, independent of the analysis schema shape (which changed in Task 8/12). Its PASS/FAIL finding still gates Task 12A vs 12B.
+**Result: PASS.** Findings recorded in `docs/superpowers/plans/openclaw-spike-notes.md`. Verified command shape: `openclaw agent --local --message "<prompt>" --model <provider/model> --json --to <placeholder> --timeout <seconds>` — no Gateway daemon, no channel UI, confirmed clean exit. Tool scoping is config-based (`openclaw config set tools.allow '[...]'`), not a per-invocation flag. Do not re-run this task. Proceed with Task 12A below (Task 12B is now moot for Phase A, but stays in this plan for reference in case OpenClaw's story changes later).
 
 **Files:**
 - Create: `docs/superpowers/plans/openclaw-spike-notes.md`
@@ -2414,7 +2414,7 @@ describe("analyzeJob (OpenClaw branch)", () => {
 
     expect(runSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: ["get_candidate_profile", "analyze_job"],
+        tools: [],
         model: "ollama/llama3.1",
       }),
     );
@@ -2440,20 +2440,72 @@ describe("analyzeJob (OpenClaw branch)", () => {
 Run: `cd BE && npm test -- test/agent/analyze-job.test.ts`
 Expected: FAIL — `Cannot find module '../../src/agent/analyze-job'`
 
-- [ ] **Step 3: Create `BE/src/agent/openclaw-client.ts`**, using the real invocation shape found in Task 11 (the signature below is a placeholder for that real shape — replace the body with whatever Task 11 actually verified works, keeping this exact exported function name and parameter shape so Step 4 doesn't need to change):
+- [ ] **Step 3: Create `BE/src/agent/openclaw-client.ts`**
+
+Task 11's spike (`docs/superpowers/plans/openclaw-spike-notes.md`) verified the invocation shape (`openclaw agent --local --message "<prompt>" --model <provider/model> --json --to <placeholder> --timeout <seconds>`, no Gateway daemon, clean exit) and that tool scoping is config-based (`openclaw config set tools.allow '[...]'`), not a per-invocation flag. It did **not** pin down, within its timebox, the exact JSON key path for the final assistant text reply on a pure-text (no-tool-call) response — the spike's own test used a tool-calling prompt and read the reply from the session transcript file, not from a documented `--json` field.
+
+**Before writing the parsing logic**, verify this directly — `openclaw` is already installed and working in `BE/` from Task 11:
+
+```bash
+cd BE
+npx openclaw config set tools.allow '[]' --strict-json
+npx openclaw agent --local --to +10000000000 \
+  --message 'Reply with exactly this JSON and nothing else: {"ok": true, "note": "hello"}' \
+  --model ollama/llama3.1 --json --timeout 60 > /tmp/openclaw-probe.json
+cat /tmp/openclaw-probe.json | python3 -m json.tool | head -80
+```
+
+Find the field holding the model's final text reply (`{"ok": true, "note": "hello"}` in this probe). If it's not directly in the top-level `--json` stdout, fall back to reading the newest file under `~/.openclaw/agents/*/sessions/*.jsonl` and taking the last line with `"role":"assistant"` and a `content` entry of `"type":"text"` (this shape is confirmed — Task 11's spike saw exactly this structure for tool-call messages: `{"role":"assistant","content":[{"type":"toolCall",...}]}`; a text-only reply should mirror it as `{"role":"assistant","content":[{"type":"text","text":"..."}]}`).
+
+Once you've found the real field/path, implement against it:
 
 ```typescript
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
 export interface OpenClawSessionOptions {
   model: string;
   tools: string[];
   prompt: string;
 }
 
+// openclaw's tool allowlist is process-wide CLI config (`openclaw config set`),
+// not a per-invocation flag (verified in Task 11's spike) — set it once per
+// distinct tool set rather than shelling out before every single call.
+let lastConfiguredTools: string | null = null;
+
+async function ensureToolAllowlist(tools: string[]): Promise<void> {
+  const key = JSON.stringify(tools);
+  if (lastConfiguredTools === key) return;
+  await execFileAsync("npx", ["openclaw", "config", "set", "tools.allow", key, "--strict-json"]);
+  lastConfiguredTools = key;
+}
+
 export async function runOpenClawSession(options: OpenClawSessionOptions): Promise<string> {
-  // Replace this body with the real invocation confirmed in Task 11's spike
-  // (e.g. spawning `openclaw run ...` and capturing stdout, or calling its
-  // SDK/RPC client directly). Must return the raw model response text.
-  throw new Error("not implemented — fill in from Task 11 spike findings");
+  await ensureToolAllowlist(options.tools);
+
+  const { stdout } = await execFileAsync(
+    "npx",
+    [
+      "openclaw", "agent", "--local",
+      "--to", "+10000000000",
+      "--message", options.prompt,
+      "--model", options.model,
+      "--json",
+      "--timeout", "120",
+    ],
+    { maxBuffer: 10 * 1024 * 1024 },
+  );
+
+  const parsed = JSON.parse(stdout);
+  // Replace this line with the real field path found via the probe above.
+  const finalText: unknown = parsed /* .yourVerifiedFieldPath */;
+  if (typeof finalText !== "string") {
+    throw new Error(`Could not locate final assistant text in OpenClaw --json output: ${stdout.slice(0, 500)}`);
+  }
+  return finalText;
 }
 ```
 
@@ -2568,7 +2620,9 @@ Description: ${job.description}`;
   try {
     raw = await runOpenClawSession({
       model: "ollama/llama3.1",
-      tools: ["get_candidate_profile", "analyze_job"],
+      tools: [], // no tool call is needed — the candidate profile is already
+      // embedded in the prompt text above, and the model's job is to return
+      // JSON as its final reply, not to invoke anything.
       prompt,
     });
   } catch (err) {
