@@ -2,29 +2,31 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A working `npm run agent:run` CLI that searches Greenhouse for relevant jobs, deduplicates and filters them, analyzes survivors against the candidate profile, computes a deterministic match score, persists everything to Postgres, and prints ranked results — runnable twice with zero duplicate rows.
+**Goal:** A working `npm run agent:run` CLI that searches Greenhouse for relevant jobs, deduplicates and filters them, extracts structured facts + qualitative reasoning per job via an LLM call, computes seven deterministic category scores (skill/experience/location/seniority/education/salary/domain) in TypeScript, persists everything to Postgres, and prints ranked results with a P0–P3 priority — runnable twice with zero duplicate rows.
 
-**Architecture:** A single TypeScript backend package (`BE/`). A fixed-order pipeline (search → normalize → dedupe → filter → analyze → score → persist) implemented as plain async functions over pure, independently-testable core logic (dedupe key, hard filters, scoring formula). The one LLM-reasoning step (job analysis) is isolated behind a function whose concrete implementation depends on Task 11's spike result — either OpenClaw invoked headlessly with a scoped tool allowlist, or a direct call through the `LLMProvider`/`OllamaProvider` abstraction if headless OpenClaw proves unworkable this phase.
+**Architecture:** A single TypeScript backend package (`BE/`). A fixed-order pipeline (search → normalize → dedupe → filter → extract+reason → score → persist) implemented as plain async functions over pure, independently-testable core logic (dedupe key, hard filters, seven scoring functions). The one LLM-reasoning step (job analysis) produces extracted facts and qualitative reasoning only — never a score — and is isolated behind a function whose concrete implementation depends on Task 11's spike result: either OpenClaw invoked headlessly with a scoped tool allowlist, or a direct call through the `LLMProvider`/`OllamaProvider` abstraction if headless OpenClaw proves unworkable this phase.
 
-**Tech Stack:** Node.js LTS, TypeScript, Prisma + PostgreSQL, Jest + ts-jest, ESLint + Prettier, Zod (schema validation), Ollama (`llama3.1`, confirmed installed locally), OpenClaw (`npm openclaw`, pending Task 11 spike).
+**Tech Stack:** Node.js LTS, TypeScript, Prisma + PostgreSQL, `js-yaml` (candidate profile parsing), Jest + ts-jest, ESLint + Prettier, Zod (schema validation, not yet exercised this phase — see spec's rulings), Ollama (`llama3.1`, confirmed installed locally), OpenClaw (`npm openclaw`, pending Task 11 spike).
 
-**Spec:** `docs/superpowers/specs/2026-08-26-job-search-agent-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-26-job-search-agent-design.md` (2026-09-25 revision)
 
 ## Global Constraints
 
-- Single TypeScript package at `BE/` — no monorepo tooling (Turborepo/pnpm workspaces) this phase (spec §10).
-- `FE/` is out of scope for this plan entirely — do not modify anything under `FE/` (spec §10).
-- Node.js LTS, TypeScript, Jest (org standard testing tool), ESLint + Prettier (spec §10).
-- No Fastify / HTTP server this phase — CLI only (spec §10).
+- Single TypeScript package at `BE/` — no monorepo tooling (Turborepo/pnpm workspaces) this phase (spec §11).
+- `FE/` is out of scope for this plan entirely — do not modify anything under `FE/` (spec §11).
+- Node.js LTS, TypeScript, Jest (org standard testing tool), ESLint + Prettier (spec §11).
+- No Fastify / HTTP server this phase — CLI only (spec §11).
 - PostgreSQL + Prisma; no vector DB, no RAG infrastructure (spec §7).
 - `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://127.0.0.1:11434`, `OLLAMA_MODEL=llama3.1` — not hard-coded, read from env with these as defaults (spec §6).
-- Deduplication must guarantee zero duplicate job rows when `agent:run` executes twice against the same source data (spec §8, §13 step 9).
-- Salary is never a hard filter — a below-floor job can still surface; only the LLM-analysis/score path may deprioritize it (spec §8).
-- Anti-hallucination rule: the analysis step must never infer an undemonstrated skill from a related one (e.g. REST ≠ GraphQL, AWS ≠ Kubernetes/Terraform/EKS) — this is a prompt-level instruction to the LLM call, not enforceable in TypeScript, but every analysis prompt (Task 12) must include it verbatim (spec §8).
+- Deduplication must guarantee zero duplicate job rows when `agent:run` executes twice against the same source data (spec §8, §14 step 9).
+- Salary is never a hard filter, and undisclosed salary must not be penalized — a below-floor or undisclosed-salary job can still surface; salary is a ranking input only, with a documented neutral default when absent (spec §8).
+- **`UNKNOWN` eligibility must never collapse into `true` or `false`.** The extraction prompt must produce `"UNKNOWN"` when the posting doesn't state eligibility, and every scoring function that reads eligibility must give `UNKNOWN` a distinct, documented partial-credit value — never the same as confirmed-eligible or confirmed-ineligible (spec §5, §8).
+- Anti-hallucination rule: the extraction step must never infer an undemonstrated skill from a related one (e.g. REST ≠ GraphQL, AWS ≠ Kubernetes/Terraform/EKS), and every fact it cannot support from the posting text is labeled `UNKNOWN` in `factLabels`, never guessed — this is a prompt-level instruction to the LLM call, not enforceable in TypeScript, but every analysis prompt (Task 12) must include it verbatim (spec §8, §9).
 - Job descriptions are untrusted content: passed into the analysis call strictly as tool-call/prompt *data*, never concatenated into anything resembling an instruction. The analysis session's tool allowlist is exactly `get_candidate_profile` + `analyze_job` — it must never be able to reach a write-capable tool (spec §9).
-- The weighted score formula runs only in our TypeScript code, never inside the LLM call (spec §2, §8).
+- The seven category scores and the overall score run only in our TypeScript code, never inside the LLM call — the LLM returns extracted facts and qualitative reasoning only (spec §2, §8).
 - Postgres credentials via env, never committed (spec §9).
-- All new source files use the `BE/src/...` layout defined in Task 1 (spec §10).
+- The candidate profile's source of truth is `BE/profile/candidate.yaml`, human-editable — not a hardcoded TypeScript constant (spec §3).
+- All new source files use the `BE/src/...` layout defined in Task 1 (spec §11).
 
 ---
 
@@ -38,11 +40,14 @@ BE/
   .eslintrc.cjs
   .prettierrc
   .env.example
+  profile/
+    candidate.yaml             human-editable candidate profile — source of truth (Task 3)
   prisma/
     schema.prisma
   src/
     types/
       job.ts                    canonical Job, JobStatus
+      candidate.ts               CandidateProfile interface
     sources/
       types.ts                  JobSource, RawJob, JobSearchParams
       greenhouse/
@@ -51,7 +56,7 @@ BE/
     pipeline/
       dedupe.ts                 dedupeKey(), filterNewJobs()
       filters.ts                passesHardFilters()
-      scoring.ts                MatchAnalysis, calculateOverallScore(), categorize()
+      scoring.ts                EligibilityFacts, JobAnalysisResult, CategoryScores, seven scoreX() functions, calculateOverallScore(), categorize()
       orchestrator.ts           runPipeline() — wires every stage in fixed order
     llm/
       provider.ts                LLMProvider interface
@@ -60,12 +65,11 @@ BE/
       analyze-job.ts             analyzeJob() — Task 12, OpenClaw or Ollama fallback
     db/
       client.ts                  Prisma client singleton
-      candidate-profile.ts       seedCandidateProfile(), getCandidateProfile()
+      candidate-profile.ts       loadCandidateProfileFromFile(), seedCandidateProfile(), getCandidateProfile()
       jobs.ts                    getExistingDedupeKeys(), saveNewJobs()
       job-matches.ts             saveJobMatch()
       agent-runs.ts               startAgentRun(), completeAgentRun()
     config/
-      candidate.ts                CANDIDATE_PROFILE seed constant
       search-config.ts            SEARCH_CONFIG constant
     cli/
       agent-run.ts                `npm run agent:run` entrypoint
@@ -75,222 +79,9 @@ BE/
 
 ---
 
-### Task 1: Backend scaffold and toolchain
+### Task 1: Backend scaffold and toolchain — **DONE (2026-08-26, commits c973bac..f0c5d2d)**
 
-**Files:**
-- Create: `BE/package.json`
-- Create: `BE/tsconfig.json`
-- Create: `BE/jest.config.ts`
-- Create: `BE/.eslintrc.cjs`
-- Create: `BE/.prettierrc`
-- Create: `BE/.env.example`
-- Create: `BE/.gitignore`
-- Create: `BE/src/types/job.ts`
-- Test: `BE/test/types/job.test.ts`
-
-**Interfaces:**
-- Produces: `Job`, `JobStatus` types, importable as `import { Job, JobStatus } from "../src/types/job"` — every later task's job-shaped data uses this type.
-
-- [ ] **Step 1: Create `BE/package.json`**
-
-```json
-{
-  "name": "job-search-agent-be",
-  "version": "0.1.0",
-  "private": true,
-  "engines": { "node": ">=20" },
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "jest",
-    "lint": "eslint src test --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "agent:run": "tsx src/cli/agent-run.ts"
-  },
-  "dependencies": {
-    "@prisma/client": "^6.0.0",
-    "zod": "^3.23.0"
-  },
-  "devDependencies": {
-    "@types/jest": "^29.5.0",
-    "@types/node": "^20.14.0",
-    "@typescript-eslint/eslint-plugin": "^7.16.0",
-    "@typescript-eslint/parser": "^7.16.0",
-    "eslint": "^8.57.0",
-    "eslint-config-prettier": "^9.1.0",
-    "jest": "^29.7.0",
-    "prettier": "^3.3.0",
-    "prisma": "^6.0.0",
-    "ts-jest": "^29.2.0",
-    "tsx": "^4.16.0",
-    "typescript": "^5.5.0"
-  }
-}
-```
-
-- [ ] **Step 2: Create `BE/tsconfig.json`**
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "CommonJS",
-    "moduleResolution": "Node",
-    "lib": ["ES2022"],
-    "outDir": "dist",
-    "rootDir": ".",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "declaration": false,
-    "sourceMap": true
-  },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
-}
-```
-
-- [ ] **Step 3: Create `BE/jest.config.ts`**
-
-```typescript
-import type { Config } from "jest";
-
-const config: Config = {
-  preset: "ts-jest",
-  testEnvironment: "node",
-  testMatch: ["<rootDir>/test/**/*.test.ts"],
-};
-
-export default config;
-```
-
-- [ ] **Step 4: Create `BE/.eslintrc.cjs`**
-
-```javascript
-module.exports = {
-  root: true,
-  parser: "@typescript-eslint/parser",
-  plugins: ["@typescript-eslint"],
-  extends: [
-    "eslint:recommended",
-    "plugin:@typescript-eslint/recommended",
-    "prettier",
-  ],
-  env: { node: true, es2022: true },
-  parserOptions: { ecmaVersion: 2022, sourceType: "module" },
-  rules: {
-    "@typescript-eslint/no-unused-vars": "error",
-  },
-};
-```
-
-- [ ] **Step 5: Create `BE/.prettierrc`**
-
-```json
-{
-  "semi": true,
-  "singleQuote": false,
-  "trailingComma": "all",
-  "printWidth": 100
-}
-```
-
-- [ ] **Step 6: Create `BE/.env.example`**
-
-```bash
-DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/job_search_agent"
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3.1
-```
-
-- [ ] **Step 7: Create `BE/.gitignore`**
-
-```
-node_modules/
-dist/
-.env
-*.log
-```
-
-- [ ] **Step 8: Write the failing test for the canonical `Job` type**
-
-```typescript
-// BE/test/types/job.test.ts
-import type { Job } from "../../src/types/job";
-
-describe("Job type", () => {
-  it("accepts a minimal valid job shape", () => {
-    const job: Job = {
-      id: "job_1",
-      source: "greenhouse",
-      company: "Acme",
-      title: "Software Engineer",
-      description: "Build things.",
-      url: "https://example.com/job/1",
-      locations: ["Remote"],
-      discoveredAt: new Date(),
-      status: "new",
-    };
-    expect(job.status).toBe("new");
-  });
-});
-```
-
-- [ ] **Step 9: Run test to verify it fails**
-
-Run: `cd BE && npm install && npm test -- test/types/job.test.ts`
-Expected: FAIL — `Cannot find module '../../src/types/job'`
-
-- [ ] **Step 10: Create `BE/src/types/job.ts`**
-
-```typescript
-export type JobStatus =
-  | "new"
-  | "reviewed"
-  | "interesting"
-  | "applied"
-  | "rejected"
-  | "archived";
-
-export interface Job {
-  id: string;
-  source: string;
-  sourceJobId?: string;
-  company: string;
-  title: string;
-  description: string;
-  url: string;
-  companyUrl?: string;
-  locations: string[];
-  remote?: boolean;
-  employmentType?: string;
-  experienceMin?: number;
-  experienceMax?: number;
-  salaryMin?: number;
-  salaryMax?: number;
-  salaryCurrency?: string;
-  technologies?: string[];
-  postedAt?: Date;
-  discoveredAt: Date;
-  status: JobStatus;
-  matchScore?: number;
-}
-```
-
-- [ ] **Step 11: Run test to verify it passes**
-
-Run: `cd BE && npm test -- test/types/job.test.ts`
-Expected: PASS
-
-- [ ] **Step 12: Commit**
-
-```bash
-git add BE/package.json BE/tsconfig.json BE/jest.config.ts BE/.eslintrc.cjs BE/.prettierrc BE/.env.example BE/.gitignore BE/src/types/job.ts BE/test/types/job.test.ts
-git commit -m "chore: scaffold BE package with canonical Job type"
-```
+No changes needed. The canonical `Job`/`JobStatus` type (`BE/src/types/job.ts`) is unaffected by this revision — eligibility and scoring fields live on `JobMatch` (Task 2), not `Job`. Do not re-run this task.
 
 ---
 
@@ -304,6 +95,8 @@ git commit -m "chore: scaffold BE package with canonical Job type"
 **Interfaces:**
 - Consumes: `DATABASE_URL` env var (Task 1's `.env.example`).
 - Produces: `prisma` singleton export from `BE/src/db/client.ts`, and generated Prisma models `CandidateProfile`, `Job`, `JobMatch`, `AgentRun`, `Application` — every later DB task uses these exact model names and fields.
+
+**Prerequisite:** this task needs a real, reachable Postgres with a role that can create/migrate a database. If `DATABASE_URL` isn't already resolvable, stop and ask the user for connection details rather than guessing credentials — do not invent a workaround (no SQLite, no skipping the real migration).
 
 - [ ] **Step 1: Create `BE/prisma/schema.prisma`**
 
@@ -356,24 +149,50 @@ model Job {
 }
 
 model JobMatch {
-  id              String   @id @default(cuid())
-  jobId           String
-  job             Job      @relation(fields: [jobId], references: [id])
-  technicalMatch  Float
-  roleMatch       Float
-  experienceMatch Float
-  locationMatch   Float
-  salaryMatch     Float
-  productionMatch Float
-  companyMatch    Float
-  overallScore    Float
-  category        String
-  strengths       String[]
-  gaps            String[]
-  risks           String[]
-  recommendation  String
-  reason          String
-  createdAt       DateTime @default(now())
+  id                        String   @id @default(cuid())
+  jobId                     String
+  job                       Job      @relation(fields: [jobId], references: [id])
+
+  // Deterministic category scores (spec §8) — computed in TypeScript, never by the LLM
+  skillMatch                Float
+  experienceMatch           Float
+  locationMatch             Float
+  seniorityMatch            Float
+  educationMatch            Float
+  salaryMatch               Float
+  domainMatch               Float
+  overallScore              Float
+  priority                  String   // "P0" | "P1" | "P2" | "P3"
+
+  // Extracted facts (LLM output, used as scoring input — not scores themselves)
+  requiredSkills            String[]
+  preferredSkills           String[]
+  seniorityLevel            String
+  educationRequirement      String?
+  domain                    String?
+
+  // Qualitative reasoning (LLM output, surfaced to the user, never scored)
+  whyMatches                String
+  strongestMatchingSkills   String[]
+  missingSkills              String[]
+  experienceGap              String?
+  concerns                   String[]
+  applicationRecommendation  String
+  interviewTopics             String[]
+  factLabels                   Json    // Record<string, "FACT" | "INFERENCE" | "UNKNOWN">
+
+  // Eligibility/evidence fields (spec §5) — null on the two Boolean? columns means UNKNOWN
+  remoteStatus                String
+  indiaEligible                Boolean?
+  worldwideRemote              Boolean?
+  locationRestriction           String?
+  visaRequired                   Boolean?
+  relocationRequired             Boolean?
+  eligibilityConfidence           String
+  eligibilityEvidence              String
+  salaryEvidence                   String?
+
+  createdAt                DateTime @default(now())
 
   @@map("job_matches")
 }
@@ -404,6 +223,8 @@ model Application {
   @@map("applications")
 }
 ```
+
+**Note on tri-state eligibility fields:** `indiaEligible`, `worldwideRemote`, `visaRequired`, `relocationRequired` are nullable `Boolean?` columns where **`null` means `"UNKNOWN"`** — this is the DB-level encoding of the TypeScript `Tri = boolean | "UNKNOWN"` type Task 8 defines. Task 10's persistence code is responsible for converting between the two; do not add a separate string-typed "UNKNOWN" sentinel column.
 
 - [ ] **Step 2: Set up local `.env` and run the migration**
 
@@ -462,92 +283,177 @@ git commit -m "feat: add Prisma schema and DB client"
 
 ---
 
-### Task 3: Candidate profile config and persistence
+### Task 3: Candidate profile file and persistence
 
 **Files:**
-- Create: `BE/src/config/candidate.ts`
+- Create: `BE/profile/candidate.yaml`
+- Create: `BE/src/types/candidate.ts`
 - Create: `BE/src/db/candidate-profile.ts`
 - Test: `BE/test/db/candidate-profile.test.ts`
+- Modify: `BE/package.json` (add `js-yaml` + `@types/js-yaml` dependencies)
 
 **Interfaces:**
 - Consumes: `prisma` from `BE/src/db/client.ts` (Task 2).
-- Produces: `CANDIDATE_PROFILE` constant, `seedCandidateProfile(): Promise<void>`, `getCandidateProfile(): Promise<Record<string, unknown>>` — Task 12 (analysis) and Task 13 (orchestrator) call `getCandidateProfile()`.
+- Produces: `CandidateProfile` interface, `loadCandidateProfileFromFile(): CandidateProfile`, `seedCandidateProfile(): Promise<void>`, `getCandidateProfile(): Promise<CandidateProfile>` — Task 8's scoring functions, Task 12 (analysis), and Task 13 (orchestrator) all consume `CandidateProfile`.
 
-- [ ] **Step 1: Create `BE/src/config/candidate.ts`**
+- [ ] **Step 1: Install `js-yaml`**
 
-```typescript
-export const CANDIDATE_PROFILE = {
-  name: "Satyajeet Singh",
-  location: "Pune, Maharashtra, India",
-  education: {
-    degree: "MCA",
-    university: "Savitribai Phule Pune University",
-    period: "2024-2026",
-  },
-  experience: [
-    {
-      company: "Techechelons Infosolutions Pvt. Ltd.",
-      role: "Full Stack Developer Intern",
-      period: "2025-Present",
-      type: "Production Internship",
-    },
-  ],
-  primaryRoles: [
-    "Full Stack Developer",
-    "Software Engineer",
-    "Backend Engineer",
-    "Node.js Developer",
-    "TypeScript Developer",
-  ],
-  secondaryRoles: [
-    "React Developer",
-    "Frontend Engineer",
-    "Product Engineer",
-    "AI Application Engineer",
-  ],
-  skills: {
-    languages: ["JavaScript", "TypeScript", "Java"],
-    backend: [
-      "Node.js",
-      "Fastify",
-      "Express.js",
-      "REST APIs",
-      "Prisma ORM",
-      "Zod",
-      "JWT",
-      "RBAC",
-      "BullMQ",
-      "Socket.IO",
-    ],
-    frontend: ["React", "Redux Toolkit", "Vite", "Tailwind CSS", "Material UI", "Formik", "Axios"],
-    databases: ["PostgreSQL", "MongoDB", "Redis"],
-    cloudDevOps: ["AWS EC2", "AWS S3", "Docker", "Linux", "Nginx", "Git", "GitHub Actions"],
-    architecture: ["Turborepo", "pnpm Workspaces", "Monorepo", "OpenAPI", "Swagger", "PM2"],
-  },
-  preferences: {
-    remotePreferred: true,
-    locations: ["Pune", "Mumbai", "Bengaluru", "Hyderabad", "Delhi NCR"],
-    internationalRemote: true,
-    salaryFloorLpa: 5,
-    salaryTargetLpa: 6,
-    salaryPreferredLpa: 8,
-    startupFriendly: true,
-    productCompanyPreferred: true,
-  },
-} as const;
+```bash
+cd BE
+npm install js-yaml
+npm install --save-dev @types/js-yaml
 ```
 
-- [ ] **Step 2: Write the failing test for seed + retrieve**
+- [ ] **Step 2: Create `BE/src/types/candidate.ts`**
+
+```typescript
+export interface CandidateProfile {
+  name: string;
+  location: string;
+  education: {
+    degree: string;
+    university: string;
+    status: "completed" | "in_progress";
+    cgpa?: number;
+  };
+  experience: {
+    months: number;
+    production: boolean;
+  };
+  primaryRoles: string[];
+  secondaryRoles: string[];
+  skills: {
+    languages: string[];
+    backend: string[];
+    frontend: string[];
+    databases: string[];
+    cloudDevOps: string[];
+    architecture: string[];
+  };
+  preferences: {
+    remotePreferred: boolean;
+    locations: string[];
+    internationalRemote: boolean;
+    salaryFloorLpa: number;
+    salaryTargetLpa: number;
+    salaryPreferredLpa: number;
+    startupFriendly: boolean;
+    productCompanyPreferred: boolean;
+  };
+}
+```
+
+- [ ] **Step 3: Create `BE/profile/candidate.yaml`**
+
+```yaml
+name: Satyajeet Singh
+location: Pune, Maharashtra, India
+
+education:
+  degree: MCA
+  university: Savitribai Phule Pune University
+  status: completed
+  cgpa: 7.91
+
+experience:
+  months: 10
+  production: true
+
+primaryRoles:
+  - Full Stack Developer
+  - Software Engineer
+  - Backend Engineer
+  - Node.js Developer
+  - TypeScript Developer
+
+secondaryRoles:
+  - React Developer
+  - Frontend Engineer
+  - Product Engineer
+
+skills:
+  languages:
+    - JavaScript
+    - TypeScript
+    - Java
+  backend:
+    - Node.js
+    - Fastify
+    - Express.js
+    - REST APIs
+    - Prisma ORM
+    - Zod
+    - JWT
+    - RBAC
+    - BullMQ
+    - Socket.IO
+    - Redis
+  frontend:
+    - React
+    - Redux Toolkit
+    - Vite
+    - Tailwind CSS
+    - Material UI
+    - Formik
+    - Axios
+  databases:
+    - PostgreSQL
+    - MongoDB
+    - Redis
+  cloudDevOps:
+    - AWS EC2
+    - AWS S3
+    - Docker
+    - Linux
+    - Nginx
+    - Git
+    - GitHub Actions
+    - CI/CD
+  architecture:
+    - Monorepos
+    - OpenAPI
+    - Swagger
+
+preferences:
+  remotePreferred: true
+  locations:
+    - Pune
+    - Bangalore
+    - Hyderabad
+    - Mumbai
+    - Delhi NCR
+    - Chennai
+    - Noida
+  internationalRemote: true
+  salaryFloorLpa: 5
+  salaryTargetLpa: 6
+  salaryPreferredLpa: 8
+  startupFriendly: true
+  productCompanyPreferred: true
+```
+
+- [ ] **Step 4: Write the failing test for load + seed + retrieve**
 
 ```typescript
 // BE/test/db/candidate-profile.test.ts
 import { prisma } from "../../src/db/client";
-import { seedCandidateProfile, getCandidateProfile } from "../../src/db/candidate-profile";
+import {
+  loadCandidateProfileFromFile,
+  seedCandidateProfile,
+  getCandidateProfile,
+} from "../../src/db/candidate-profile";
 
-describe("candidate profile persistence", () => {
+describe("candidate profile", () => {
   afterAll(async () => {
     await prisma.candidateProfile.deleteMany();
     await prisma.$disconnect();
+  });
+
+  it("loads the profile from profile/candidate.yaml", () => {
+    const profile = loadCandidateProfileFromFile();
+    expect(profile.name).toBe("Satyajeet Singh");
+    expect(profile.education.status).toBe("completed");
+    expect(profile.experience.months).toBe(10);
   });
 
   it("seeds and retrieves the candidate profile", async () => {
@@ -566,53 +472,66 @@ describe("candidate profile persistence", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 5: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/db/candidate-profile.test.ts`
 Expected: FAIL — `Cannot find module '../../src/db/candidate-profile'`
 
-- [ ] **Step 4: Create `BE/src/db/candidate-profile.ts`**
+- [ ] **Step 6: Create `BE/src/db/candidate-profile.ts`**
 
 ```typescript
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { load } from "js-yaml";
 import { prisma } from "./client";
-import { CANDIDATE_PROFILE } from "../config/candidate";
+import type { CandidateProfile } from "../types/candidate";
+
+const PROFILE_PATH = join(__dirname, "../../profile/candidate.yaml");
+
+export function loadCandidateProfileFromFile(): CandidateProfile {
+  const raw = readFileSync(PROFILE_PATH, "utf-8");
+  return load(raw) as CandidateProfile;
+}
 
 export async function seedCandidateProfile(): Promise<void> {
+  const profile = loadCandidateProfileFromFile();
   const existing = await prisma.candidateProfile.findFirst();
   if (existing) {
     await prisma.candidateProfile.update({
       where: { id: existing.id },
-      data: { data: CANDIDATE_PROFILE },
+      data: { data: profile },
     });
     return;
   }
-  await prisma.candidateProfile.create({ data: { data: CANDIDATE_PROFILE } });
+  await prisma.candidateProfile.create({ data: { data: profile } });
 }
 
-export async function getCandidateProfile(): Promise<typeof CANDIDATE_PROFILE> {
+export async function getCandidateProfile(): Promise<CandidateProfile> {
   const record = await prisma.candidateProfile.findFirst();
   if (!record) {
     throw new Error("Candidate profile not seeded — run seedCandidateProfile() first.");
   }
-  return record.data as typeof CANDIDATE_PROFILE;
+  return record.data as CandidateProfile;
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 7: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/db/candidate-profile.test.ts`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add BE/src/config/candidate.ts BE/src/db/candidate-profile.ts BE/test/db/candidate-profile.test.ts
-git commit -m "feat: seed and persist candidate profile"
+git add BE/package.json BE/package-lock.json BE/profile/candidate.yaml BE/src/types/candidate.ts BE/src/db/candidate-profile.ts BE/test/db/candidate-profile.test.ts
+git commit -m "feat: load candidate profile from profile/candidate.yaml"
 ```
 
 ---
 
 ### Task 4: Search configuration and Greenhouse JobSource
+
+Unchanged from the original plan — no scoring or candidate-profile dependency.
 
 **Files:**
 - Create: `BE/src/config/search-config.ts`
@@ -816,6 +735,8 @@ git commit -m "feat: add search config and Greenhouse JobSource"
 
 ### Task 5: Normalize Greenhouse jobs into canonical `Job`
 
+Unchanged from the original plan.
+
 **Files:**
 - Create: `BE/src/sources/greenhouse/normalize.ts`
 - Test: `BE/test/sources/greenhouse-normalize.test.ts`
@@ -928,6 +849,8 @@ git commit -m "feat: normalize Greenhouse jobs to canonical Job shape"
 
 ### Task 6: Deduplication
 
+Unchanged from the original plan.
+
 **Files:**
 - Create: `BE/src/pipeline/dedupe.ts`
 - Test: `BE/test/pipeline/dedupe.test.ts`
@@ -1037,6 +960,8 @@ git commit -m "feat: add multi-signal job deduplication"
 ---
 
 ### Task 7: Hard filters
+
+Unchanged from the original plan — the "don't reject for one missing skill" nuance from the updated requirements applies to skill-level scoring (Task 8), not this title-keyword filter.
 
 **Files:**
 - Create: `BE/src/pipeline/filters.ts`
@@ -1176,57 +1101,261 @@ git commit -m "feat: add deterministic hard filters"
 
 ---
 
-### Task 8: Scoring formula
+### Task 8: Deterministic scoring (seven category functions)
+
+**This task is a full rewrite of the original single-weighted-formula design.** Replaces `MatchAnalysis`/`calculateOverallScore` with `EligibilityFacts`, `JobAnalysisResult`, `CategoryScores`, seven pure scoring functions, and a P0–P3 priority mapping.
 
 **Files:**
 - Create: `BE/src/pipeline/scoring.ts`
 - Test: `BE/test/pipeline/scoring.test.ts`
 
 **Interfaces:**
-- Produces: `MatchAnalysis` interface, `calculateOverallScore(a: MatchAnalysis): number`, `categorize(score: number): MatchCategory` — Task 12 (analysis) produces `MatchAnalysis` values, Task 13 (orchestrator) calls both functions.
+- Consumes: `CandidateProfile` (Task 3), `Job` (Task 1).
+- Produces: `EligibilityFacts`, `JobAnalysisResult`, `CategoryScores`, `PriorityTier` types; `scoreSkillMatch`, `scoreExperienceMatch`, `scoreLocationMatch`, `scoreSeniorityMatch`, `scoreEducationMatch`, `scoreSalaryMatch`, `scoreDomainMatch`, `scoreJob`, `calculateOverallScore`, `categorize` functions — Task 10 (persistence) calls `scoreJob`, `calculateOverallScore`, `categorize` internally and returns the result; Task 13 (orchestrator) only consumes the `PriorityTier`/`JobAnalysisResult` types, not the scoring functions themselves. Task 12 (analysis) produces `JobAnalysisResult` values.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/pipeline/scoring.test.ts
-import { calculateOverallScore, categorize } from "../../src/pipeline/scoring";
-import type { MatchAnalysis } from "../../src/pipeline/scoring";
+import {
+  scoreSkillMatch,
+  scoreExperienceMatch,
+  scoreLocationMatch,
+  scoreSeniorityMatch,
+  scoreEducationMatch,
+  scoreSalaryMatch,
+  scoreDomainMatch,
+  scoreJob,
+  calculateOverallScore,
+  categorize,
+} from "../../src/pipeline/scoring";
+import type { CandidateProfile } from "../../src/types/candidate";
+import type { Job } from "../../src/types/job";
+import type { JobAnalysisResult } from "../../src/pipeline/scoring";
 
-const BASE: MatchAnalysis = {
-  technicalMatch: 90,
-  roleMatch: 90,
-  experienceMatch: 90,
-  locationMatch: 90,
-  salaryMatch: 90,
-  productionMatch: 90,
-  companyMatch: 90,
-  strengths: [],
-  gaps: [],
-  risks: [],
-  recommendation: "strong_apply",
-  reason: "test",
+const CANDIDATE: CandidateProfile = {
+  name: "Satyajeet Singh",
+  location: "Pune, Maharashtra, India",
+  education: { degree: "MCA", university: "SPPU", status: "completed", cgpa: 7.91 },
+  experience: { months: 10, production: true },
+  primaryRoles: ["Software Engineer"],
+  secondaryRoles: [],
+  skills: {
+    languages: ["TypeScript", "JavaScript"],
+    backend: ["Node.js", "Fastify", "PostgreSQL", "Prisma ORM"],
+    frontend: ["React"],
+    databases: ["PostgreSQL", "Redis"],
+    cloudDevOps: ["AWS EC2", "Docker"],
+    architecture: [],
+  },
+  preferences: {
+    remotePreferred: true,
+    locations: ["Pune", "Bangalore"],
+    internationalRemote: true,
+    salaryFloorLpa: 5,
+    salaryTargetLpa: 6,
+    salaryPreferredLpa: 8,
+    startupFriendly: true,
+    productCompanyPreferred: true,
+  },
 };
 
-describe("calculateOverallScore", () => {
-  it("applies the spec's exact weights", () => {
-    const score = calculateOverallScore(BASE);
-    expect(score).toBeCloseTo(90, 5);
+function makeJob(overrides: Partial<Job> = {}): Job {
+  return {
+    id: "x",
+    source: "greenhouse",
+    company: "Acme",
+    title: "Software Engineer",
+    description: "desc",
+    url: "https://example.com/1",
+    locations: ["Remote"],
+    discoveredAt: new Date(),
+    status: "new",
+    ...overrides,
+  };
+}
+
+function makeFacts(overrides: Partial<JobAnalysisResult> = {}): JobAnalysisResult {
+  return {
+    requiredSkills: ["TypeScript", "Node.js"],
+    preferredSkills: ["React"],
+    experienceRequirementYears: { min: 1, max: 2 },
+    seniorityLevel: "junior",
+    educationRequirement: undefined,
+    domain: "SaaS",
+    eligibility: {
+      remoteStatus: "remote",
+      indiaEligible: true,
+      worldwideRemote: false,
+      visaRequired: false,
+      relocationRequired: false,
+      eligibilityConfidence: "high",
+      eligibilityEvidence: "Job posting states: Remote - India",
+    },
+    whyMatches: "",
+    strongestMatchingSkills: [],
+    missingSkills: [],
+    concerns: [],
+    applicationRecommendation: "strong_apply",
+    interviewTopicsToPrepare: [],
+    factLabels: {},
+    ...overrides,
+  };
+}
+
+describe("scoreSkillMatch", () => {
+  it("gives full points when all required and preferred skills are demonstrated", () => {
+    const facts = makeFacts({ requiredSkills: ["TypeScript", "Node.js"], preferredSkills: ["React"] });
+    expect(scoreSkillMatch(CANDIDATE, facts)).toBe(30);
   });
 
-  it("weights technicalMatch most heavily", () => {
-    const withLowTechnical = calculateOverallScore({ ...BASE, technicalMatch: 0 });
-    const withLowCompany = calculateOverallScore({ ...BASE, companyMatch: 0 });
-    expect(withLowTechnical).toBeLessThan(withLowCompany);
+  it("gives zero when the candidate has no listed skills at all matching", () => {
+    const facts = makeFacts({ requiredSkills: ["Rust"], preferredSkills: ["Elixir"] });
+    expect(scoreSkillMatch(CANDIDATE, facts)).toBe(0);
+  });
+
+  it("gives full required credit when requiredSkills is empty", () => {
+    const facts = makeFacts({ requiredSkills: [], preferredSkills: [] });
+    expect(scoreSkillMatch(CANDIDATE, facts)).toBe(30);
   });
 });
 
-describe("categorize", () => {
+describe("scoreExperienceMatch", () => {
+  it("gives full points when the candidate meets the minimum", () => {
+    const facts = makeFacts({ experienceRequirementYears: { min: 0.5 } });
+    expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(20);
+  });
+
+  it("gives full points when no minimum is stated", () => {
+    const facts = makeFacts({ experienceRequirementYears: {} });
+    expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(20);
+  });
+
+  it("gives zero when the gap is 2 years or more", () => {
+    const facts = makeFacts({ experienceRequirementYears: { min: 3 } }); // candidate has ~0.83y, gap >= 2
+    expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(0);
+  });
+});
+
+describe("scoreLocationMatch", () => {
+  it("gives full points when explicitly India-eligible remote", () => {
+    const facts = makeFacts({
+      eligibility: { ...makeFacts().eligibility, indiaEligible: true },
+    });
+    expect(scoreLocationMatch(CANDIDATE, makeJob(), facts)).toBe(20);
+  });
+
+  it("gives partial credit — neither zero nor full — when eligibility is UNKNOWN", () => {
+    const facts = makeFacts({
+      eligibility: {
+        ...makeFacts().eligibility,
+        indiaEligible: "UNKNOWN",
+        worldwideRemote: "UNKNOWN",
+      },
+    });
+    const score = scoreLocationMatch(CANDIDATE, makeJob(), facts);
+    expect(score).toBeGreaterThan(0);
+    expect(score).toBeLessThan(20);
+  });
+
+  it("gives a low but nonzero score when explicitly restricted to a non-India-eligible location", () => {
+    const facts = makeFacts({
+      eligibility: {
+        ...makeFacts().eligibility,
+        indiaEligible: false,
+        worldwideRemote: false,
+        locationRestriction: "UK only",
+      },
+    });
+    expect(scoreLocationMatch(CANDIDATE, makeJob(), facts)).toBe(2);
+  });
+
+  it("scores an onsite job against the candidate's preferred cities", () => {
+    const facts = makeFacts({ eligibility: { ...makeFacts().eligibility, remoteStatus: "onsite" } });
+    const preferredCityJob = makeJob({ locations: ["Pune, India"] });
+    const otherCityJob = makeJob({ locations: ["Berlin, Germany"] });
+    expect(scoreLocationMatch(CANDIDATE, preferredCityJob, facts)).toBe(18);
+    expect(scoreLocationMatch(CANDIDATE, otherCityJob, facts)).toBe(5);
+  });
+});
+
+describe("scoreSeniorityMatch", () => {
   it.each([
-    [95, "Excellent"],
-    [85, "Strong"],
-    [75, "Good"],
-    [65, "Possible"],
-    [40, "Low Priority"],
+    ["junior", 15],
+    ["unclear", 10],
+    ["mid", 6],
+    ["senior", 0],
+  ])("scores seniorityLevel %s as %d", (level, expected) => {
+    const facts = makeFacts({ seniorityLevel: level as JobAnalysisResult["seniorityLevel"] });
+    expect(scoreSeniorityMatch(facts)).toBe(expected);
+  });
+});
+
+describe("scoreEducationMatch", () => {
+  it("gives full points when no education requirement is stated", () => {
+    expect(scoreEducationMatch(makeFacts({ educationRequirement: undefined }))).toBe(5);
+  });
+
+  it("gives full points when the requirement matches the candidate's degree", () => {
+    expect(scoreEducationMatch(makeFacts({ educationRequirement: "Bachelor's degree in CS" }))).toBe(5);
+  });
+
+  it("gives a small nonzero score for an unrecognized requirement", () => {
+    expect(scoreEducationMatch(makeFacts({ educationRequirement: "PhD in Physics" }))).toBe(2);
+  });
+});
+
+describe("scoreSalaryMatch", () => {
+  it("gives a neutral default when salary is undisclosed", () => {
+    expect(scoreSalaryMatch(CANDIDATE, makeJob())).toBe(3);
+  });
+
+  it("gives full points when salary meets the preferred level", () => {
+    const job = makeJob({ salaryMin: 8, salaryMax: 10, salaryCurrency: "INR_LPA" });
+    expect(scoreSalaryMatch(CANDIDATE, job)).toBe(5);
+  });
+
+  it("gives a low but nonzero score when below the floor", () => {
+    const job = makeJob({ salaryMin: 4, salaryMax: 4, salaryCurrency: "INR_LPA" });
+    expect(scoreSalaryMatch(CANDIDATE, job)).toBe(1);
+  });
+});
+
+describe("scoreDomainMatch", () => {
+  it("gives full points for a positive-signal domain", () => {
+    expect(scoreDomainMatch(makeFacts({ domain: "SaaS" }))).toBe(5);
+  });
+
+  it("gives a neutral default when domain is unstated", () => {
+    expect(scoreDomainMatch(makeFacts({ domain: undefined }))).toBe(3);
+  });
+
+  it("gives a low score for an unrecognized domain", () => {
+    expect(scoreDomainMatch(makeFacts({ domain: "Mining Equipment" }))).toBe(2);
+  });
+});
+
+describe("scoreJob + calculateOverallScore + categorize", () => {
+  it("combines all seven categories into a 0-100 overall score", () => {
+    const scores = scoreJob(CANDIDATE, makeJob(), makeFacts());
+    const overall = calculateOverallScore(scores);
+    expect(overall).toBe(
+      scores.skillMatch +
+        scores.experienceMatch +
+        scores.locationMatch +
+        scores.seniorityMatch +
+        scores.educationMatch +
+        scores.salaryMatch +
+        scores.domainMatch,
+    );
+    expect(overall).toBeLessThanOrEqual(100);
+  });
+
+  it.each([
+    [95, "P0"],
+    [85, "P1"],
+    [70, "P2"],
+    [40, "P3"],
   ])("categorizes %d as %s", (score, expected) => {
     expect(categorize(score)).toBe(expected);
   });
@@ -1241,41 +1370,206 @@ Expected: FAIL — `Cannot find module '../../src/pipeline/scoring'`
 - [ ] **Step 3: Create `BE/src/pipeline/scoring.ts`**
 
 ```typescript
-export interface MatchAnalysis {
-  technicalMatch: number;
-  roleMatch: number;
-  experienceMatch: number;
-  locationMatch: number;
-  salaryMatch: number;
-  productionMatch: number;
-  companyMatch: number;
-  strengths: string[];
-  gaps: string[];
-  risks: string[];
-  recommendation: "strong_apply" | "apply" | "consider" | "needs_review" | "skip";
-  reason: string;
+import type { CandidateProfile } from "../types/candidate";
+import type { Job } from "../types/job";
+
+export type Tri = boolean | "UNKNOWN";
+
+export interface EligibilityFacts {
+  remoteStatus: "remote" | "hybrid" | "onsite" | "unclear";
+  indiaEligible: Tri;
+  worldwideRemote: Tri;
+  locationRestriction?: string;
+  visaRequired: Tri;
+  relocationRequired: Tri;
+  eligibilityConfidence: "high" | "medium" | "low";
+  eligibilityEvidence: string;
+  salaryEvidence?: string;
 }
 
-export function calculateOverallScore(analysis: MatchAnalysis): number {
+export interface JobAnalysisResult {
+  requiredSkills: string[];
+  preferredSkills: string[];
+  experienceRequirementYears: { min?: number; max?: number };
+  seniorityLevel: "junior" | "mid" | "senior" | "unclear";
+  educationRequirement?: string;
+  domain?: string;
+  eligibility: EligibilityFacts;
+
+  whyMatches: string;
+  strongestMatchingSkills: string[];
+  missingSkills: string[];
+  experienceGap?: string;
+  concerns: string[];
+  applicationRecommendation: "strong_apply" | "apply" | "consider" | "needs_review" | "skip";
+  interviewTopicsToPrepare: string[];
+  factLabels: Record<string, "FACT" | "INFERENCE" | "UNKNOWN">;
+}
+
+export interface CategoryScores {
+  skillMatch: number;
+  experienceMatch: number;
+  locationMatch: number;
+  seniorityMatch: number;
+  educationMatch: number;
+  salaryMatch: number;
+  domainMatch: number;
+}
+
+function flattenCandidateSkills(candidate: CandidateProfile): Set<string> {
+  const all = [
+    ...candidate.skills.languages,
+    ...candidate.skills.backend,
+    ...candidate.skills.frontend,
+    ...candidate.skills.databases,
+    ...candidate.skills.cloudDevOps,
+    ...candidate.skills.architecture,
+  ];
+  return new Set(all.map((s) => s.toLowerCase()));
+}
+
+function matchRatio(required: string[], candidateSkills: Set<string>): number {
+  if (required.length === 0) return 1;
+  const matched = required.filter((skill) => candidateSkills.has(skill.toLowerCase()));
+  return matched.length / required.length;
+}
+
+const REQUIRED_SKILL_WEIGHT = 22;
+const PREFERRED_SKILL_WEIGHT = 8;
+
+export function scoreSkillMatch(candidate: CandidateProfile, facts: JobAnalysisResult): number {
+  const candidateSkills = flattenCandidateSkills(candidate);
+  const requiredRatio = matchRatio(facts.requiredSkills, candidateSkills);
+  const preferredRatio = matchRatio(facts.preferredSkills, candidateSkills);
+  return Math.round(requiredRatio * REQUIRED_SKILL_WEIGHT + preferredRatio * PREFERRED_SKILL_WEIGHT);
+}
+
+const EXPERIENCE_GAP_YEARS_FOR_ZERO = 2;
+
+export function scoreExperienceMatch(candidate: CandidateProfile, facts: JobAnalysisResult): number {
+  const min = facts.experienceRequirementYears.min;
+  if (min === undefined) return 20;
+  const candidateYears = candidate.experience.months / 12;
+  const gap = Math.max(0, min - candidateYears);
+  const fraction = Math.max(0, 1 - gap / EXPERIENCE_GAP_YEARS_FOR_ZERO);
+  return Math.round(20 * fraction);
+}
+
+export function scoreLocationMatch(
+  candidate: CandidateProfile,
+  job: Job,
+  facts: JobAnalysisResult,
+): number {
+  const { eligibility } = facts;
+
+  if (eligibility.remoteStatus === "remote") {
+    if (eligibility.indiaEligible === true || eligibility.worldwideRemote === true) {
+      return 20;
+    }
+    if (eligibility.indiaEligible === "UNKNOWN" && eligibility.worldwideRemote === "UNKNOWN") {
+      return 10;
+    }
+    return 2;
+  }
+
+  const preferredCity = candidate.preferences.locations.some((city) =>
+    job.locations.some((loc) => loc.toLowerCase().includes(city.toLowerCase())),
+  );
+  return preferredCity ? 18 : 5;
+}
+
+export function scoreSeniorityMatch(facts: JobAnalysisResult): number {
+  switch (facts.seniorityLevel) {
+    case "junior":
+      return 15;
+    case "unclear":
+      return 10;
+    case "mid":
+      return 6;
+    case "senior":
+      return 0;
+  }
+}
+
+const RECOGNIZED_EDUCATION_TERMS = [
+  "bachelor",
+  "master",
+  "mca",
+  "b.tech",
+  "computer science",
+  "engineering",
+  "degree",
+];
+
+export function scoreEducationMatch(facts: JobAnalysisResult): number {
+  if (!facts.educationRequirement) return 5;
+  const requirement = facts.educationRequirement.toLowerCase();
+  const recognized = RECOGNIZED_EDUCATION_TERMS.some((term) => requirement.includes(term));
+  return recognized ? 5 : 2;
+}
+
+export function scoreSalaryMatch(candidate: CandidateProfile, job: Job): number {
+  const salary = job.salaryMax ?? job.salaryMin;
+  if (salary === undefined) return 3;
+
+  const { salaryFloorLpa, salaryTargetLpa, salaryPreferredLpa } = candidate.preferences;
+  if (salary >= salaryPreferredLpa) return 5;
+  if (salary >= salaryTargetLpa) return 4;
+  if (salary >= salaryFloorLpa) return 3;
+  return 1;
+}
+
+const POSITIVE_DOMAINS = [
+  "saas",
+  "b2b saas",
+  "ai",
+  "devtools",
+  "developer platforms",
+  "fintech",
+  "healthtech",
+  "e-commerce",
+  "automation",
+  "hrtech",
+  "productivity",
+];
+
+export function scoreDomainMatch(facts: JobAnalysisResult): number {
+  if (!facts.domain) return 3;
+  const recognized = POSITIVE_DOMAINS.includes(facts.domain.toLowerCase());
+  return recognized ? 5 : 2;
+}
+
+export function scoreJob(candidate: CandidateProfile, job: Job, facts: JobAnalysisResult): CategoryScores {
+  return {
+    skillMatch: scoreSkillMatch(candidate, facts),
+    experienceMatch: scoreExperienceMatch(candidate, facts),
+    locationMatch: scoreLocationMatch(candidate, job, facts),
+    seniorityMatch: scoreSeniorityMatch(facts),
+    educationMatch: scoreEducationMatch(facts),
+    salaryMatch: scoreSalaryMatch(candidate, job),
+    domainMatch: scoreDomainMatch(facts),
+  };
+}
+
+export function calculateOverallScore(scores: CategoryScores): number {
   return (
-    analysis.technicalMatch * 0.3 +
-    analysis.roleMatch * 0.2 +
-    analysis.experienceMatch * 0.15 +
-    analysis.productionMatch * 0.1 +
-    analysis.locationMatch * 0.1 +
-    analysis.salaryMatch * 0.1 +
-    analysis.companyMatch * 0.05
+    scores.skillMatch +
+    scores.experienceMatch +
+    scores.locationMatch +
+    scores.seniorityMatch +
+    scores.educationMatch +
+    scores.salaryMatch +
+    scores.domainMatch
   );
 }
 
-export type MatchCategory = "Excellent" | "Strong" | "Good" | "Possible" | "Low Priority";
+export type PriorityTier = "P0" | "P1" | "P2" | "P3";
 
-export function categorize(score: number): MatchCategory {
-  if (score >= 90) return "Excellent";
-  if (score >= 80) return "Strong";
-  if (score >= 70) return "Good";
-  if (score >= 60) return "Possible";
-  return "Low Priority";
+export function categorize(score: number): PriorityTier {
+  if (score >= 90) return "P0";
+  if (score >= 80) return "P1";
+  if (score >= 65) return "P2";
+  return "P3";
 }
 ```
 
@@ -1288,12 +1582,14 @@ Expected: PASS
 
 ```bash
 git add BE/src/pipeline/scoring.ts BE/test/pipeline/scoring.test.ts
-git commit -m "feat: add deterministic weighted scoring formula"
+git commit -m "feat: replace weighted formula with seven deterministic category scores"
 ```
 
 ---
 
 ### Task 9: LLMProvider and OllamaProvider
+
+Unchanged from the original plan — this class is generic over `<T>` and any JSON schema, independent of what shape Task 12 asks it to produce.
 
 **Files:**
 - Create: `BE/src/llm/provider.ts`
@@ -1419,6 +1715,8 @@ git commit -m "feat: add LLMProvider abstraction and OllamaProvider"
 
 ### Task 10: Job, JobMatch, and AgentRun persistence
 
+**`saveJobMatch` is a full rewrite** — it now computes the seven category scores itself (via Task 8's `scoreJob`) from a `JobAnalysisResult` and persists the extended eligibility/reasoning columns, converting `Tri` values to nullable `Boolean` (spec §5, Task 2's schema note). `jobs.ts` and `agent-runs.ts` are unchanged.
+
 **Files:**
 - Create: `BE/src/db/jobs.ts`
 - Create: `BE/src/db/job-matches.ts`
@@ -1428,8 +1726,8 @@ git commit -m "feat: add LLMProvider abstraction and OllamaProvider"
 - Test: `BE/test/db/agent-runs.test.ts`
 
 **Interfaces:**
-- Consumes: `prisma` (Task 2), `Job` (Task 1), `dedupeKey` (Task 6), `MatchAnalysis`/`calculateOverallScore`/`categorize` (Task 8).
-- Produces: `getExistingDedupeKeys(): Promise<Set<string>>`, `saveNewJobs(jobs: Job[]): Promise<Map<string, string>>` (returns dedupeKey → DB id), `saveJobMatch(jobId: string, analysis: MatchAnalysis): Promise<void>`, `startAgentRun(runId: string): Promise<void>`, `completeAgentRun(runId: string, stats: AgentRunStats): Promise<void>` — Task 13 (orchestrator) calls all five.
+- Consumes: `prisma` (Task 2), `Job` (Task 1), `CandidateProfile` (Task 3), `dedupeKey` (Task 6), `JobAnalysisResult`/`scoreJob`/`calculateOverallScore`/`categorize` (Task 8).
+- Produces: `getExistingDedupeKeys(): Promise<Set<string>>`, `saveNewJobs(jobs: Job[]): Promise<Map<string, string>>` (returns dedupeKey → DB id), `saveJobMatch(jobId: string, job: Job, candidate: CandidateProfile, analysis: JobAnalysisResult): Promise<{ overallScore: number; priority: PriorityTier }>` (returns what it computed so the orchestrator never recomputes it), `startAgentRun(runId: string): Promise<void>`, `completeAgentRun(runId: string, stats: AgentRunStats): Promise<void>` — Task 13 (orchestrator) calls all five.
 
 - [ ] **Step 1: Write the failing test for jobs persistence**
 
@@ -1556,21 +1854,58 @@ import { prisma } from "../../src/db/client";
 import { saveNewJobs } from "../../src/db/jobs";
 import { saveJobMatch } from "../../src/db/job-matches";
 import type { Job } from "../../src/types/job";
-import type { MatchAnalysis } from "../../src/pipeline/scoring";
+import type { CandidateProfile } from "../../src/types/candidate";
+import type { JobAnalysisResult } from "../../src/pipeline/scoring";
 
-const ANALYSIS: MatchAnalysis = {
-  technicalMatch: 90,
-  roleMatch: 85,
-  experienceMatch: 80,
-  locationMatch: 100,
-  salaryMatch: 70,
-  productionMatch: 90,
-  companyMatch: 60,
-  strengths: ["Node.js"],
-  gaps: ["GraphQL not demonstrated"],
-  risks: [],
-  recommendation: "strong_apply",
-  reason: "Strong technical alignment.",
+const CANDIDATE: CandidateProfile = {
+  name: "Satyajeet Singh",
+  location: "Pune",
+  education: { degree: "MCA", university: "SPPU", status: "completed", cgpa: 7.91 },
+  experience: { months: 10, production: true },
+  primaryRoles: [],
+  secondaryRoles: [],
+  skills: {
+    languages: ["TypeScript"],
+    backend: ["Node.js"],
+    frontend: ["React"],
+    databases: [],
+    cloudDevOps: [],
+    architecture: [],
+  },
+  preferences: {
+    remotePreferred: true,
+    locations: ["Pune"],
+    internationalRemote: true,
+    salaryFloorLpa: 5,
+    salaryTargetLpa: 6,
+    salaryPreferredLpa: 8,
+    startupFriendly: true,
+    productCompanyPreferred: true,
+  },
+};
+
+const ANALYSIS: JobAnalysisResult = {
+  requiredSkills: ["TypeScript", "Node.js"],
+  preferredSkills: ["React"],
+  experienceRequirementYears: { min: 0.5 },
+  seniorityLevel: "junior",
+  domain: "SaaS",
+  eligibility: {
+    remoteStatus: "remote",
+    indiaEligible: true,
+    worldwideRemote: false,
+    visaRequired: false,
+    relocationRequired: false,
+    eligibilityConfidence: "high",
+    eligibilityEvidence: "Job posting states: Remote - India",
+  },
+  whyMatches: "Strong TypeScript/Node alignment.",
+  strongestMatchingSkills: ["TypeScript", "Node.js"],
+  missingSkills: [],
+  concerns: [],
+  applicationRecommendation: "strong_apply",
+  interviewTopicsToPrepare: ["System design basics"],
+  factLabels: { indiaEligible: "FACT" },
 };
 
 function makeJob(): Job {
@@ -1597,20 +1932,40 @@ describe("saveJobMatch", () => {
     await prisma.$disconnect();
   });
 
-  it("persists the analysis, computed score, and category against the job", async () => {
+  it("persists the computed scores, priority, eligibility, and reasoning against the job", async () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
 
-    await saveJobMatch(jobId, ANALYSIS);
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, ANALYSIS);
 
     const match = await prisma.jobMatch.findFirst({ where: { jobId } });
     expect(match).not.toBeNull();
-    expect(match?.overallScore).toBeCloseTo(85, 1);
-    expect(match?.category).toBe("Strong");
-    expect(match?.recommendation).toBe("strong_apply");
+    expect(match?.skillMatch).toBe(30);
+    expect(match?.overallScore).toBeGreaterThan(0);
+    expect(match?.priority).toMatch(/^P[0-3]$/);
+    expect(match?.indiaEligible).toBe(true);
+    expect(match?.worldwideRemote).toBe(false);
+    expect(match?.whyMatches).toBe("Strong TypeScript/Node alignment.");
+    expect((match?.factLabels as Record<string, string>).indiaEligible).toBe("FACT");
 
     const job = await prisma.job.findUnique({ where: { id: jobId } });
-    expect(job?.matchScore).toBeCloseTo(85, 1);
+    expect(job?.matchScore).toBe(match?.overallScore);
+    expect(job?.status).toBe("reviewed");
+  });
+
+  it("stores UNKNOWN eligibility as null, not true or false", async () => {
+    const ids = await saveNewJobs([makeJob()]);
+    const jobId = [...ids.values()][0];
+    const unknownAnalysis: JobAnalysisResult = {
+      ...ANALYSIS,
+      eligibility: { ...ANALYSIS.eligibility, indiaEligible: "UNKNOWN", worldwideRemote: "UNKNOWN" },
+    };
+
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, unknownAnalysis);
+
+    const match = await prisma.jobMatch.findFirst({ where: { jobId } });
+    expect(match?.indiaEligible).toBeNull();
+    expect(match?.worldwideRemote).toBeNull();
   });
 });
 ```
@@ -1624,30 +1979,62 @@ Expected: FAIL — `Cannot find module '../../src/db/job-matches'`
 
 ```typescript
 import { prisma } from "./client";
-import { calculateOverallScore, categorize } from "../pipeline/scoring";
-import type { MatchAnalysis } from "../pipeline/scoring";
+import { scoreJob, calculateOverallScore, categorize } from "../pipeline/scoring";
+import type { JobAnalysisResult, Tri, PriorityTier } from "../pipeline/scoring";
+import type { CandidateProfile } from "../types/candidate";
+import type { Job } from "../types/job";
 
-export async function saveJobMatch(jobId: string, analysis: MatchAnalysis): Promise<void> {
-  const overallScore = calculateOverallScore(analysis);
-  const category = categorize(overallScore);
+function triToDb(value: Tri): boolean | null {
+  return value === "UNKNOWN" ? null : value;
+}
+
+export async function saveJobMatch(
+  jobId: string,
+  job: Job,
+  candidate: CandidateProfile,
+  analysis: JobAnalysisResult,
+): Promise<{ overallScore: number; priority: PriorityTier }> {
+  const scores = scoreJob(candidate, job, analysis);
+  const overallScore = calculateOverallScore(scores);
+  const priority = categorize(overallScore);
 
   await prisma.jobMatch.create({
     data: {
       jobId,
-      technicalMatch: analysis.technicalMatch,
-      roleMatch: analysis.roleMatch,
-      experienceMatch: analysis.experienceMatch,
-      locationMatch: analysis.locationMatch,
-      salaryMatch: analysis.salaryMatch,
-      productionMatch: analysis.productionMatch,
-      companyMatch: analysis.companyMatch,
+      skillMatch: scores.skillMatch,
+      experienceMatch: scores.experienceMatch,
+      locationMatch: scores.locationMatch,
+      seniorityMatch: scores.seniorityMatch,
+      educationMatch: scores.educationMatch,
+      salaryMatch: scores.salaryMatch,
+      domainMatch: scores.domainMatch,
       overallScore,
-      category,
-      strengths: analysis.strengths,
-      gaps: analysis.gaps,
-      risks: analysis.risks,
-      recommendation: analysis.recommendation,
-      reason: analysis.reason,
+      priority,
+
+      requiredSkills: analysis.requiredSkills,
+      preferredSkills: analysis.preferredSkills,
+      seniorityLevel: analysis.seniorityLevel,
+      educationRequirement: analysis.educationRequirement,
+      domain: analysis.domain,
+
+      whyMatches: analysis.whyMatches,
+      strongestMatchingSkills: analysis.strongestMatchingSkills,
+      missingSkills: analysis.missingSkills,
+      experienceGap: analysis.experienceGap,
+      concerns: analysis.concerns,
+      applicationRecommendation: analysis.applicationRecommendation,
+      interviewTopics: analysis.interviewTopicsToPrepare,
+      factLabels: analysis.factLabels,
+
+      remoteStatus: analysis.eligibility.remoteStatus,
+      indiaEligible: triToDb(analysis.eligibility.indiaEligible),
+      worldwideRemote: triToDb(analysis.eligibility.worldwideRemote),
+      locationRestriction: analysis.eligibility.locationRestriction,
+      visaRequired: triToDb(analysis.eligibility.visaRequired),
+      relocationRequired: triToDb(analysis.eligibility.relocationRequired),
+      eligibilityConfidence: analysis.eligibility.eligibilityConfidence,
+      eligibilityEvidence: analysis.eligibility.eligibilityEvidence,
+      salaryEvidence: analysis.eligibility.salaryEvidence,
     },
   });
 
@@ -1655,6 +2042,8 @@ export async function saveJobMatch(jobId: string, analysis: MatchAnalysis): Prom
     where: { id: jobId },
     data: { matchScore: overallScore, status: "reviewed" },
   });
+
+  return { overallScore, priority };
 }
 ```
 
@@ -1755,12 +2144,14 @@ Expected: PASS
 
 ```bash
 git add BE/src/db/jobs.ts BE/src/db/job-matches.ts BE/src/db/agent-runs.ts BE/test/db/jobs.test.ts BE/test/db/job-matches.test.ts BE/test/db/agent-runs.test.ts
-git commit -m "feat: persist jobs, job matches, and agent run stats"
+git commit -m "feat: persist jobs, extended job matches, and agent run stats"
 ```
 
 ---
 
 ### Task 11: Spike — verify OpenClaw headless invocation
+
+Unchanged from the original plan — the spike itself tests a trivial echo tool, independent of the analysis schema shape (which changed in Task 8/12). Its PASS/FAIL finding still gates Task 12A vs 12B.
 
 **Files:**
 - Create: `docs/superpowers/plans/openclaw-spike-notes.md`
@@ -1831,48 +2222,78 @@ git commit -m "docs: record OpenClaw headless invocation spike findings"
 
 ### Task 12: Wire the analysis step
 
+**Full rewrite.** `analyzeJob` now returns a `JobAnalysisResult` (extracted facts + qualitative reasoning) instead of `MatchAnalysis` (which had numeric match percentages). No scoring happens here — that's entirely Task 8, called by Task 10/13.
+
 **Files:**
 - Create: `BE/src/agent/analyze-job.ts`
 - Test: `BE/test/agent/analyze-job.test.ts`
 
 **Interfaces:**
-- Consumes: `getCandidateProfile()` (Task 3), `Job` (Task 1), `MatchAnalysis` (Task 8), `OllamaProvider` (Task 9, only in the 12B branch).
-- Produces: `analyzeJob(job: Job): Promise<MatchAnalysis>` — Task 13 (orchestrator) calls this for every job that passes hard filters. **This exact function signature is identical in both branches** so Task 13 never needs to know which one was implemented.
+- Consumes: `getCandidateProfile()` (Task 3), `Job` (Task 1), `JobAnalysisResult` (Task 8), `OllamaProvider` (Task 9, only in the 12B branch).
+- Produces: `analyzeJob(job: Job): Promise<JobAnalysisResult>` — Task 13 (orchestrator) calls this for every job that passes hard filters. **This exact function signature is identical in both branches** so Task 13 never needs to know which one was implemented.
 
 Implement **exactly one** of the two branches below, chosen by Task 11's recorded finding.
 
 **Shared prompt content (both branches must include this verbatim in the prompt sent to the model):**
 
 ```
-You are analyzing whether a job posting is a good match for a candidate.
+You are extracting structured facts from a job posting and assessing fit
+against a candidate profile. You do NOT compute a score — a separate
+system computes the score from the facts you extract.
 
-CRITICAL RULE: Never infer that the candidate has a skill because it is
-related to a skill they do demonstrate. For example, if the candidate has
-REST API experience but the job requires GraphQL, GraphQL is NOT
+CRITICAL RULE (skills): Never infer that the candidate has a skill because
+it is related to a skill they do demonstrate. For example, if the candidate
+has REST API experience but the job requires GraphQL, GraphQL is NOT
 demonstrated. If the candidate has AWS experience but the job requires
 Kubernetes, Terraform, or EKS, none of those are demonstrated unless
-explicitly listed in the candidate's skills. Only claim a skill is
-demonstrated if it appears explicitly in the candidate profile.
+explicitly listed in the candidate's skills.
 
-The candidate is an early-career software engineer with production
-full-stack experience. Do not describe them as a "fresher with no
-experience" — they have production experience. Do not describe them as
-senior — they are early-career.
+CRITICAL RULE (eligibility): Never infer indiaEligible or worldwideRemote
+as true unless the posting explicitly states it (e.g. "Remote - India" or
+"Remote - Worldwide"). A posting that just says "Remote" with no further
+qualifier means indiaEligible = "UNKNOWN" and worldwideRemote = "UNKNOWN" —
+not true. If the posting explicitly restricts to a region that excludes
+India (e.g. "Remote - UK only"), set indiaEligible = false and record that
+region in locationRestriction. Always fill eligibilityEvidence with the
+exact phrase or a close paraphrase from the posting that supports your
+answer — if nothing in the posting speaks to eligibility, say so ("not
+stated in posting") rather than guessing.
+
+CRITICAL RULE (labeling): every field in factLabels must be "FACT" (directly
+stated in the posting), "INFERENCE" (a reasonable read of stated text, not
+verbatim), or "UNKNOWN" (not addressed by the posting at all). Never guess.
+
+The candidate is an early-career software engineer with ~10 months of
+production full-stack experience — not a "fresher with no experience," and
+not senior.
 
 Return ONLY valid JSON matching this shape:
 {
-  "technicalMatch": number (0-100),
-  "roleMatch": number (0-100),
-  "experienceMatch": number (0-100),
-  "locationMatch": number (0-100),
-  "salaryMatch": number (0-100),
-  "productionMatch": number (0-100),
-  "companyMatch": number (0-100),
-  "strengths": string[],
-  "gaps": string[],
-  "risks": string[],
-  "recommendation": "strong_apply" | "apply" | "consider" | "needs_review" | "skip",
-  "reason": string
+  "requiredSkills": string[],
+  "preferredSkills": string[],
+  "experienceRequirementYears": { "min": number | null, "max": number | null },
+  "seniorityLevel": "junior" | "mid" | "senior" | "unclear",
+  "educationRequirement": string | null,
+  "domain": string | null,
+  "eligibility": {
+    "remoteStatus": "remote" | "hybrid" | "onsite" | "unclear",
+    "indiaEligible": true | false | "UNKNOWN",
+    "worldwideRemote": true | false | "UNKNOWN",
+    "locationRestriction": string | null,
+    "visaRequired": true | false | "UNKNOWN",
+    "relocationRequired": true | false | "UNKNOWN",
+    "eligibilityConfidence": "high" | "medium" | "low",
+    "eligibilityEvidence": string,
+    "salaryEvidence": string | null
+  },
+  "whyMatches": string,
+  "strongestMatchingSkills": string[],
+  "missingSkills": string[],
+  "experienceGap": string | null,
+  "concerns": string[],
+  "applicationRecommendation": "strong_apply" | "apply" | "consider" | "needs_review" | "skip",
+  "interviewTopicsToPrepare": string[],
+  "factLabels": { "<fieldName>": "FACT" | "INFERENCE" | "UNKNOWN", ... }
 }
 ```
 
@@ -1886,6 +2307,7 @@ import { analyzeJob } from "../../src/agent/analyze-job";
 import * as candidateProfileModule from "../../src/db/candidate-profile";
 import * as openclawModule from "../../src/agent/openclaw-client";
 import type { Job } from "../../src/types/job";
+import type { JobAnalysisResult } from "../../src/pipeline/scoring";
 
 const JOB: Job = {
   id: "job_1",
@@ -1893,26 +2315,34 @@ const JOB: Job = {
   sourceJobId: "1",
   company: "Acme",
   title: "Software Engineer",
-  description: "Build Node.js APIs.",
+  description: "Build Node.js APIs. Remote - India.",
   url: "https://example.com/1",
   locations: ["Remote"],
   discoveredAt: new Date(),
   status: "new",
 };
 
-const ANALYSIS = {
-  technicalMatch: 90,
-  roleMatch: 85,
-  experienceMatch: 80,
-  locationMatch: 100,
-  salaryMatch: 70,
-  productionMatch: 90,
-  companyMatch: 60,
-  strengths: ["Node.js"],
-  gaps: [],
-  risks: [],
-  recommendation: "strong_apply",
-  reason: "Good fit.",
+const ANALYSIS: JobAnalysisResult = {
+  requiredSkills: ["Node.js"],
+  preferredSkills: [],
+  experienceRequirementYears: {},
+  seniorityLevel: "junior",
+  eligibility: {
+    remoteStatus: "remote",
+    indiaEligible: true,
+    worldwideRemote: false,
+    visaRequired: false,
+    relocationRequired: false,
+    eligibilityConfidence: "high",
+    eligibilityEvidence: "Job posting states: Remote - India",
+  },
+  whyMatches: "Good fit.",
+  strongestMatchingSkills: ["Node.js"],
+  missingSkills: [],
+  concerns: [],
+  applicationRecommendation: "strong_apply",
+  interviewTopicsToPrepare: [],
+  factLabels: { indiaEligible: "FACT" },
 };
 
 describe("analyzeJob (OpenClaw branch)", () => {
@@ -1935,7 +2365,7 @@ describe("analyzeJob (OpenClaw branch)", () => {
     expect(result).toEqual(ANALYSIS);
   });
 
-  it("falls back to needs_review when OpenClaw returns malformed JSON", async () => {
+  it("falls back to needs_review with UNKNOWN eligibility when OpenClaw returns malformed JSON", async () => {
     jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
       name: "Satyajeet Singh",
     } as never);
@@ -1943,7 +2373,8 @@ describe("analyzeJob (OpenClaw branch)", () => {
 
     const result = await analyzeJob(JOB);
 
-    expect(result.recommendation).toBe("needs_review");
+    expect(result.applicationRecommendation).toBe("needs_review");
+    expect(result.eligibility.indiaEligible).toBe("UNKNOWN");
   });
 });
 ```
@@ -1976,52 +2407,93 @@ export async function runOpenClawSession(options: OpenClawSessionOptions): Promi
 import { getCandidateProfile } from "../db/candidate-profile";
 import { runOpenClawSession } from "./openclaw-client";
 import type { Job } from "../types/job";
-import type { MatchAnalysis } from "../pipeline/scoring";
+import type { JobAnalysisResult } from "../pipeline/scoring";
 
-const ANALYSIS_INSTRUCTIONS = `You are analyzing whether a job posting is a good match for a candidate.
+const ANALYSIS_INSTRUCTIONS = `You are extracting structured facts from a job posting and assessing fit
+against a candidate profile. You do NOT compute a score — a separate
+system computes the score from the facts you extract.
 
-CRITICAL RULE: Never infer that the candidate has a skill because it is
-related to a skill they do demonstrate. For example, if the candidate has
-REST API experience but the job requires GraphQL, GraphQL is NOT
+CRITICAL RULE (skills): Never infer that the candidate has a skill because
+it is related to a skill they do demonstrate. For example, if the candidate
+has REST API experience but the job requires GraphQL, GraphQL is NOT
 demonstrated. If the candidate has AWS experience but the job requires
 Kubernetes, Terraform, or EKS, none of those are demonstrated unless
-explicitly listed in the candidate's skills. Only claim a skill is
-demonstrated if it appears explicitly in the candidate profile.
+explicitly listed in the candidate's skills.
 
-The candidate is an early-career software engineer with production
-full-stack experience. Do not describe them as a "fresher with no
-experience" — they have production experience. Do not describe them as
-senior — they are early-career.
+CRITICAL RULE (eligibility): Never infer indiaEligible or worldwideRemote
+as true unless the posting explicitly states it (e.g. "Remote - India" or
+"Remote - Worldwide"). A posting that just says "Remote" with no further
+qualifier means indiaEligible = "UNKNOWN" and worldwideRemote = "UNKNOWN" —
+not true. If the posting explicitly restricts to a region that excludes
+India (e.g. "Remote - UK only"), set indiaEligible = false and record that
+region in locationRestriction. Always fill eligibilityEvidence with the
+exact phrase or a close paraphrase from the posting that supports your
+answer — if nothing in the posting speaks to eligibility, say so ("not
+stated in posting") rather than guessing.
+
+CRITICAL RULE (labeling): every field in factLabels must be "FACT" (directly
+stated in the posting), "INFERENCE" (a reasonable read of stated text, not
+verbatim), or "UNKNOWN" (not addressed by the posting at all). Never guess.
+
+The candidate is an early-career software engineer with ~10 months of
+production full-stack experience — not a "fresher with no experience," and
+not senior.
 
 Return ONLY valid JSON matching this shape:
 {
-  "technicalMatch": number (0-100), "roleMatch": number (0-100),
-  "experienceMatch": number (0-100), "locationMatch": number (0-100),
-  "salaryMatch": number (0-100), "productionMatch": number (0-100),
-  "companyMatch": number (0-100), "strengths": string[], "gaps": string[],
-  "risks": string[],
-  "recommendation": "strong_apply" | "apply" | "consider" | "needs_review" | "skip",
-  "reason": string
+  "requiredSkills": string[],
+  "preferredSkills": string[],
+  "experienceRequirementYears": { "min": number | null, "max": number | null },
+  "seniorityLevel": "junior" | "mid" | "senior" | "unclear",
+  "educationRequirement": string | null,
+  "domain": string | null,
+  "eligibility": {
+    "remoteStatus": "remote" | "hybrid" | "onsite" | "unclear",
+    "indiaEligible": true | false | "UNKNOWN",
+    "worldwideRemote": true | false | "UNKNOWN",
+    "locationRestriction": string | null,
+    "visaRequired": true | false | "UNKNOWN",
+    "relocationRequired": true | false | "UNKNOWN",
+    "eligibilityConfidence": "high" | "medium" | "low",
+    "eligibilityEvidence": string,
+    "salaryEvidence": string | null
+  },
+  "whyMatches": string,
+  "strongestMatchingSkills": string[],
+  "missingSkills": string[],
+  "experienceGap": string | null,
+  "concerns": string[],
+  "applicationRecommendation": "strong_apply" | "apply" | "consider" | "needs_review" | "skip",
+  "interviewTopicsToPrepare": string[],
+  "factLabels": { "<fieldName>": "FACT" | "INFERENCE" | "UNKNOWN", ... }
 }`;
 
-function needsReviewFallback(reason: string): MatchAnalysis {
+function needsReviewFallback(reason: string): JobAnalysisResult {
   return {
-    technicalMatch: 0,
-    roleMatch: 0,
-    experienceMatch: 0,
-    locationMatch: 0,
-    salaryMatch: 0,
-    productionMatch: 0,
-    companyMatch: 0,
-    strengths: [],
-    gaps: [],
-    risks: [reason],
-    recommendation: "needs_review",
-    reason,
+    requiredSkills: [],
+    preferredSkills: [],
+    experienceRequirementYears: {},
+    seniorityLevel: "unclear",
+    eligibility: {
+      remoteStatus: "unclear",
+      indiaEligible: "UNKNOWN",
+      worldwideRemote: "UNKNOWN",
+      visaRequired: "UNKNOWN",
+      relocationRequired: "UNKNOWN",
+      eligibilityConfidence: "low",
+      eligibilityEvidence: reason,
+    },
+    whyMatches: "",
+    strongestMatchingSkills: [],
+    missingSkills: [],
+    concerns: [reason],
+    applicationRecommendation: "needs_review",
+    interviewTopicsToPrepare: [],
+    factLabels: {},
   };
 }
 
-export async function analyzeJob(job: Job): Promise<MatchAnalysis> {
+export async function analyzeJob(job: Job): Promise<JobAnalysisResult> {
   const profile = await getCandidateProfile();
 
   const prompt = `${ANALYSIS_INSTRUCTIONS}
@@ -2048,7 +2520,7 @@ Description: ${job.description}`;
   }
 
   try {
-    return JSON.parse(raw) as MatchAnalysis;
+    return JSON.parse(raw) as JobAnalysisResult;
   } catch {
     return needsReviewFallback(`OpenClaw returned non-JSON output: ${raw.slice(0, 200)}`);
   }
@@ -2064,7 +2536,7 @@ Expected: PASS
 
 ```bash
 git add BE/src/agent/openclaw-client.ts BE/src/agent/analyze-job.ts BE/test/agent/analyze-job.test.ts
-git commit -m "feat: wire job analysis through OpenClaw"
+git commit -m "feat: wire job analysis (extraction + reasoning) through OpenClaw"
 ```
 
 #### Branch 12B — implement only if Task 11's spike result is FAIL
@@ -2077,6 +2549,7 @@ import { analyzeJob } from "../../src/agent/analyze-job";
 import * as candidateProfileModule from "../../src/db/candidate-profile";
 import { OllamaProvider } from "../../src/llm/ollama-provider";
 import type { Job } from "../../src/types/job";
+import type { JobAnalysisResult } from "../../src/pipeline/scoring";
 
 const JOB: Job = {
   id: "job_1",
@@ -2084,26 +2557,34 @@ const JOB: Job = {
   sourceJobId: "1",
   company: "Acme",
   title: "Software Engineer",
-  description: "Build Node.js APIs.",
+  description: "Build Node.js APIs. Remote - India.",
   url: "https://example.com/1",
   locations: ["Remote"],
   discoveredAt: new Date(),
   status: "new",
 };
 
-const ANALYSIS = {
-  technicalMatch: 90,
-  roleMatch: 85,
-  experienceMatch: 80,
-  locationMatch: 100,
-  salaryMatch: 70,
-  productionMatch: 90,
-  companyMatch: 60,
-  strengths: ["Node.js"],
-  gaps: [],
-  risks: [],
-  recommendation: "strong_apply",
-  reason: "Good fit.",
+const ANALYSIS: JobAnalysisResult = {
+  requiredSkills: ["Node.js"],
+  preferredSkills: [],
+  experienceRequirementYears: {},
+  seniorityLevel: "junior",
+  eligibility: {
+    remoteStatus: "remote",
+    indiaEligible: true,
+    worldwideRemote: false,
+    visaRequired: false,
+    relocationRequired: false,
+    eligibilityConfidence: "high",
+    eligibilityEvidence: "Job posting states: Remote - India",
+  },
+  whyMatches: "Good fit.",
+  strongestMatchingSkills: ["Node.js"],
+  missingSkills: [],
+  concerns: [],
+  applicationRecommendation: "strong_apply",
+  interviewTopicsToPrepare: [],
+  factLabels: { indiaEligible: "FACT" },
 };
 
 describe("analyzeJob (Ollama fallback branch)", () => {
@@ -2121,7 +2602,7 @@ describe("analyzeJob (Ollama fallback branch)", () => {
     expect(result).toEqual(ANALYSIS);
   });
 
-  it("falls back to needs_review when OllamaProvider throws", async () => {
+  it("falls back to needs_review with UNKNOWN eligibility when OllamaProvider throws", async () => {
     jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
       name: "Satyajeet Singh",
     } as never);
@@ -2131,7 +2612,8 @@ describe("analyzeJob (Ollama fallback branch)", () => {
 
     const result = await analyzeJob(JOB);
 
-    expect(result.recommendation).toBe("needs_review");
+    expect(result.applicationRecommendation).toBe("needs_review");
+    expect(result.eligibility.indiaEligible).toBe("UNKNOWN");
   });
 });
 ```
@@ -2147,76 +2629,129 @@ Expected: FAIL — `Cannot find module '../../src/agent/analyze-job'`
 import { getCandidateProfile } from "../db/candidate-profile";
 import { OllamaProvider } from "../llm/ollama-provider";
 import type { Job } from "../types/job";
-import type { MatchAnalysis } from "../pipeline/scoring";
+import type { JobAnalysisResult } from "../pipeline/scoring";
 
-const ANALYSIS_INSTRUCTIONS = `You are analyzing whether a job posting is a good match for a candidate.
+const ANALYSIS_INSTRUCTIONS = `You are extracting structured facts from a job posting and assessing fit
+against a candidate profile. You do NOT compute a score — a separate
+system computes the score from the facts you extract.
 
-CRITICAL RULE: Never infer that the candidate has a skill because it is
-related to a skill they do demonstrate. For example, if the candidate has
-REST API experience but the job requires GraphQL, GraphQL is NOT
+CRITICAL RULE (skills): Never infer that the candidate has a skill because
+it is related to a skill they do demonstrate. For example, if the candidate
+has REST API experience but the job requires GraphQL, GraphQL is NOT
 demonstrated. If the candidate has AWS experience but the job requires
 Kubernetes, Terraform, or EKS, none of those are demonstrated unless
-explicitly listed in the candidate's skills. Only claim a skill is
-demonstrated if it appears explicitly in the candidate profile.
+explicitly listed in the candidate's skills.
 
-The candidate is an early-career software engineer with production
-full-stack experience. Do not describe them as a "fresher with no
-experience" — they have production experience. Do not describe them as
-senior — they are early-career.`;
+CRITICAL RULE (eligibility): Never infer indiaEligible or worldwideRemote
+as true unless the posting explicitly states it (e.g. "Remote - India" or
+"Remote - Worldwide"). A posting that just says "Remote" with no further
+qualifier means indiaEligible = "UNKNOWN" and worldwideRemote = "UNKNOWN" —
+not true. If the posting explicitly restricts to a region that excludes
+India (e.g. "Remote - UK only"), set indiaEligible = false and record that
+region in locationRestriction. Always fill eligibilityEvidence with the
+exact phrase or a close paraphrase from the posting that supports your
+answer — if nothing in the posting speaks to eligibility, say so ("not
+stated in posting") rather than guessing.
+
+CRITICAL RULE (labeling): every field in factLabels must be "FACT" (directly
+stated in the posting), "INFERENCE" (a reasonable read of stated text, not
+verbatim), or "UNKNOWN" (not addressed by the posting at all). Never guess.
+
+The candidate is an early-career software engineer with ~10 months of
+production full-stack experience — not a "fresher with no experience," and
+not senior.`;
+
+const ELIGIBILITY_SCHEMA = {
+  type: "object",
+  properties: {
+    remoteStatus: { type: "string", enum: ["remote", "hybrid", "onsite", "unclear"] },
+    indiaEligible: {},
+    worldwideRemote: {},
+    locationRestriction: { type: ["string", "null"] },
+    visaRequired: {},
+    relocationRequired: {},
+    eligibilityConfidence: { type: "string", enum: ["high", "medium", "low"] },
+    eligibilityEvidence: { type: "string" },
+    salaryEvidence: { type: ["string", "null"] },
+  },
+  required: [
+    "remoteStatus",
+    "indiaEligible",
+    "worldwideRemote",
+    "visaRequired",
+    "relocationRequired",
+    "eligibilityConfidence",
+    "eligibilityEvidence",
+  ],
+};
 
 const RESPONSE_SCHEMA = {
   type: "object",
   properties: {
-    technicalMatch: { type: "number" },
-    roleMatch: { type: "number" },
-    experienceMatch: { type: "number" },
-    locationMatch: { type: "number" },
-    salaryMatch: { type: "number" },
-    productionMatch: { type: "number" },
-    companyMatch: { type: "number" },
-    strengths: { type: "array", items: { type: "string" } },
-    gaps: { type: "array", items: { type: "string" } },
-    risks: { type: "array", items: { type: "string" } },
-    recommendation: {
+    requiredSkills: { type: "array", items: { type: "string" } },
+    preferredSkills: { type: "array", items: { type: "string" } },
+    experienceRequirementYears: {
+      type: "object",
+      properties: { min: { type: ["number", "null"] }, max: { type: ["number", "null"] } },
+    },
+    seniorityLevel: { type: "string", enum: ["junior", "mid", "senior", "unclear"] },
+    educationRequirement: { type: ["string", "null"] },
+    domain: { type: ["string", "null"] },
+    eligibility: ELIGIBILITY_SCHEMA,
+    whyMatches: { type: "string" },
+    strongestMatchingSkills: { type: "array", items: { type: "string" } },
+    missingSkills: { type: "array", items: { type: "string" } },
+    experienceGap: { type: ["string", "null"] },
+    concerns: { type: "array", items: { type: "string" } },
+    applicationRecommendation: {
       type: "string",
       enum: ["strong_apply", "apply", "consider", "needs_review", "skip"],
     },
-    reason: { type: "string" },
+    interviewTopicsToPrepare: { type: "array", items: { type: "string" } },
+    factLabels: { type: "object" },
   },
   required: [
-    "technicalMatch",
-    "roleMatch",
-    "experienceMatch",
-    "locationMatch",
-    "salaryMatch",
-    "productionMatch",
-    "companyMatch",
-    "strengths",
-    "gaps",
-    "risks",
-    "recommendation",
-    "reason",
+    "requiredSkills",
+    "preferredSkills",
+    "experienceRequirementYears",
+    "seniorityLevel",
+    "eligibility",
+    "whyMatches",
+    "strongestMatchingSkills",
+    "missingSkills",
+    "concerns",
+    "applicationRecommendation",
+    "interviewTopicsToPrepare",
+    "factLabels",
   ],
 };
 
-function needsReviewFallback(reason: string): MatchAnalysis {
+function needsReviewFallback(reason: string): JobAnalysisResult {
   return {
-    technicalMatch: 0,
-    roleMatch: 0,
-    experienceMatch: 0,
-    locationMatch: 0,
-    salaryMatch: 0,
-    productionMatch: 0,
-    companyMatch: 0,
-    strengths: [],
-    gaps: [],
-    risks: [reason],
-    recommendation: "needs_review",
-    reason,
+    requiredSkills: [],
+    preferredSkills: [],
+    experienceRequirementYears: {},
+    seniorityLevel: "unclear",
+    eligibility: {
+      remoteStatus: "unclear",
+      indiaEligible: "UNKNOWN",
+      worldwideRemote: "UNKNOWN",
+      visaRequired: "UNKNOWN",
+      relocationRequired: "UNKNOWN",
+      eligibilityConfidence: "low",
+      eligibilityEvidence: reason,
+    },
+    whyMatches: "",
+    strongestMatchingSkills: [],
+    missingSkills: [],
+    concerns: [reason],
+    applicationRecommendation: "needs_review",
+    interviewTopicsToPrepare: [],
+    factLabels: {},
   };
 }
 
-export async function analyzeJob(job: Job): Promise<MatchAnalysis> {
+export async function analyzeJob(job: Job): Promise<JobAnalysisResult> {
   const profile = await getCandidateProfile();
   const provider = new OllamaProvider({
     baseUrl: process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
@@ -2236,7 +2771,7 @@ Salary: ${job.salaryMin ?? "not disclosed"}-${job.salaryMax ?? "not disclosed"} 
 Description: ${job.description}`;
 
   try {
-    return await provider.generateStructured<MatchAnalysis>(prompt, RESPONSE_SCHEMA);
+    return await provider.generateStructured<JobAnalysisResult>(prompt, RESPONSE_SCHEMA);
   } catch (err) {
     return needsReviewFallback(`Ollama analysis failed: ${(err as Error).message}`);
   }
@@ -2252,19 +2787,21 @@ Expected: PASS
 
 ```bash
 git add BE/src/agent/analyze-job.ts BE/test/agent/analyze-job.test.ts
-git commit -m "feat: wire job analysis through direct Ollama fallback"
+git commit -m "feat: wire job analysis (extraction + reasoning) through direct Ollama fallback"
 ```
 
 ---
 
 ### Task 13: Pipeline orchestrator
 
+**Rewrite.** Passes `candidate` through to `saveJobMatch`, builds `RankedMatch` with `priority` and a human-readable `remoteEligibility` summary instead of the old `category` string.
+
 **Files:**
 - Create: `BE/src/pipeline/orchestrator.ts`
 - Test: `BE/test/pipeline/orchestrator.test.ts`
 
 **Interfaces:**
-- Consumes: `GreenhouseSource` (Task 4), `normalizeGreenhouseJob` (Task 5), `filterNewJobs`/`dedupeKey` (Task 6), `passesHardFilters` (Task 7), `analyzeJob` (Task 12), `getExistingDedupeKeys`/`saveNewJobs`/`saveJobMatch`/`startAgentRun`/`completeAgentRun` (Task 10), `SEARCH_CONFIG` (Task 4).
+- Consumes: `GreenhouseSource` (Task 4), `normalizeGreenhouseJob` (Task 5), `filterNewJobs`/`dedupeKey` (Task 6), `passesHardFilters` (Task 7), `analyzeJob` (Task 12), `getCandidateProfile` (Task 3), `getExistingDedupeKeys`/`saveNewJobs`/`saveJobMatch` (now returning `{ overallScore, priority }`)/`startAgentRun`/`completeAgentRun` (Task 10), `PriorityTier`/`JobAnalysisResult` types (Task 8), `SEARCH_CONFIG` (Task 4).
 - Produces: `runPipeline(runId: string): Promise<PipelineResult>` — Task 14 (CLI) calls this and formats `PipelineResult` for display.
 
 - [ ] **Step 1: Write the failing test**
@@ -2274,10 +2811,12 @@ git commit -m "feat: wire job analysis through direct Ollama fallback"
 import { runPipeline } from "../../src/pipeline/orchestrator";
 import * as greenhouseModule from "../../src/sources/greenhouse";
 import * as analyzeModule from "../../src/agent/analyze-job";
+import * as candidateProfileModule from "../../src/db/candidate-profile";
 import * as jobsDb from "../../src/db/jobs";
 import * as jobMatchesDb from "../../src/db/job-matches";
 import * as agentRunsDb from "../../src/db/agent-runs";
 import type { RawJob } from "../../src/sources/types";
+import type { CandidateProfile } from "../../src/types/candidate";
 
 const RAW_JOB: RawJob = {
   source: "greenhouse",
@@ -2289,29 +2828,66 @@ const RAW_JOB: RawJob = {
   description: "Build Node.js APIs.",
 };
 
+const CANDIDATE: CandidateProfile = {
+  name: "Satyajeet Singh",
+  location: "Pune",
+  education: { degree: "MCA", university: "SPPU", status: "completed", cgpa: 7.91 },
+  experience: { months: 10, production: true },
+  primaryRoles: [],
+  secondaryRoles: [],
+  skills: {
+    languages: ["TypeScript"],
+    backend: ["Node.js"],
+    frontend: ["React"],
+    databases: [],
+    cloudDevOps: [],
+    architecture: [],
+  },
+  preferences: {
+    remotePreferred: true,
+    locations: ["Pune"],
+    internationalRemote: true,
+    salaryFloorLpa: 5,
+    salaryTargetLpa: 6,
+    salaryPreferredLpa: 8,
+    startupFriendly: true,
+    productCompanyPreferred: true,
+  },
+};
+
 describe("runPipeline", () => {
   beforeEach(() => {
     jest.spyOn(greenhouseModule.GreenhouseSource.prototype, "search").mockResolvedValue([RAW_JOB]);
+    jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue(CANDIDATE);
     jest.spyOn(jobsDb, "getExistingDedupeKeys").mockResolvedValue(new Set());
     jest
       .spyOn(jobsDb, "saveNewJobs")
       .mockResolvedValue(new Map([["id:greenhouse:1", "db-id-1"]]));
-    jest.spyOn(jobMatchesDb, "saveJobMatch").mockResolvedValue();
+    jest.spyOn(jobMatchesDb, "saveJobMatch").mockResolvedValue({ overallScore: 95, priority: "P0" });
     jest.spyOn(agentRunsDb, "startAgentRun").mockResolvedValue();
     jest.spyOn(agentRunsDb, "completeAgentRun").mockResolvedValue();
     jest.spyOn(analyzeModule, "analyzeJob").mockResolvedValue({
-      technicalMatch: 95,
-      roleMatch: 95,
-      experienceMatch: 90,
-      locationMatch: 100,
-      salaryMatch: 80,
-      productionMatch: 90,
-      companyMatch: 70,
-      strengths: ["Node.js"],
-      gaps: [],
-      risks: [],
-      recommendation: "strong_apply",
-      reason: "Great fit.",
+      requiredSkills: ["Node.js"],
+      preferredSkills: ["TypeScript"],
+      experienceRequirementYears: {},
+      seniorityLevel: "junior",
+      domain: "SaaS",
+      eligibility: {
+        remoteStatus: "remote",
+        indiaEligible: true,
+        worldwideRemote: false,
+        visaRequired: false,
+        relocationRequired: false,
+        eligibilityConfidence: "high",
+        eligibilityEvidence: "Job posting states: Remote - India",
+      },
+      whyMatches: "Great fit.",
+      strongestMatchingSkills: ["Node.js"],
+      missingSkills: [],
+      concerns: [],
+      applicationRecommendation: "strong_apply",
+      interviewTopicsToPrepare: [],
+      factLabels: {},
     });
   });
 
@@ -2323,7 +2899,9 @@ describe("runPipeline", () => {
     expect(result.jobsAnalyzed).toBe(1);
     expect(result.matches).toHaveLength(1);
     expect(result.matches[0].title).toBe("Software Engineer");
-    expect(result.matches[0].overallScore).toBeGreaterThan(90);
+    expect(result.matches[0].overallScore).toBeGreaterThan(0);
+    expect(result.matches[0].priority).toMatch(/^P[0-3]$/);
+    expect(result.matches[0].remoteEligibility).toBe("India-eligible");
 
     expect(agentRunsDb.startAgentRun).toHaveBeenCalledWith("test-run-1");
     expect(agentRunsDb.completeAgentRun).toHaveBeenCalledWith(
@@ -2370,7 +2948,8 @@ import { normalizeGreenhouseJob } from "../sources/greenhouse/normalize";
 import { filterNewJobs, dedupeKey } from "./dedupe";
 import { passesHardFilters } from "./filters";
 import { analyzeJob } from "../agent/analyze-job";
-import { calculateOverallScore, categorize } from "./scoring";
+import type { PriorityTier, JobAnalysisResult } from "./scoring";
+import { getCandidateProfile } from "../db/candidate-profile";
 import { getExistingDedupeKeys, saveNewJobs } from "../db/jobs";
 import { saveJobMatch } from "../db/job-matches";
 import { startAgentRun, completeAgentRun } from "../db/agent-runs";
@@ -2382,8 +2961,9 @@ export interface RankedMatch {
   company: string;
   location: string;
   salary: string;
+  remoteEligibility: string;
   overallScore: number;
-  category: string;
+  priority: PriorityTier;
 }
 
 export interface PipelineResult {
@@ -2400,8 +2980,18 @@ function formatSalary(job: Job): string {
   return `${job.salaryMin ?? "?"}-${job.salaryMax ?? "?"} ${job.salaryCurrency ?? ""}`.trim();
 }
 
+function summarizeEligibility(analysis: JobAnalysisResult): string {
+  const { indiaEligible, worldwideRemote } = analysis.eligibility;
+  if (indiaEligible === true) return "India-eligible";
+  if (worldwideRemote === true) return "Worldwide";
+  if (indiaEligible === "UNKNOWN" && worldwideRemote === "UNKNOWN") return "Unknown";
+  return "Restricted";
+}
+
 export async function runPipeline(runId: string): Promise<PipelineResult> {
   await startAgentRun(runId);
+
+  const candidate = await getCandidateProfile();
 
   const source = new GreenhouseSource([...SEARCH_CONFIG.greenhouseBoardTokens]);
   const rawJobs = await source.search({
@@ -2425,15 +3015,16 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
     const jobId = savedIds.get(dedupeKey(job));
     if (!jobId) continue;
 
-    await saveJobMatch(jobId, analysis);
+    const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
 
     matches.push({
       title: job.title,
       company: job.company,
       location: job.locations.join(", "),
       salary: formatSalary(job),
-      overallScore: calculateOverallScore(analysis),
-      category: categorize(calculateOverallScore(analysis)),
+      remoteEligibility: summarizeEligibility(analysis),
+      overallScore,
+      priority,
     });
   }
 
@@ -2454,8 +3045,7 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
     jobsNew: result.jobsNew,
     jobsFiltered: result.jobsFiltered,
     jobsAnalyzed: result.jobsAnalyzed,
-    strongMatches: matches.filter((m) => m.category === "Excellent" || m.category === "Strong")
-      .length,
+    strongMatches: matches.filter((m) => m.priority === "P0" || m.priority === "P1").length,
   });
 
   return result;
@@ -2471,12 +3061,14 @@ Expected: PASS
 
 ```bash
 git add BE/src/pipeline/orchestrator.ts BE/test/pipeline/orchestrator.test.ts
-git commit -m "feat: wire the full pipeline orchestrator"
+git commit -m "feat: wire the full pipeline orchestrator with deterministic scoring"
 ```
 
 ---
 
 ### Task 14: CLI entrypoint
+
+**Rewrite of `formatResultsForDisplay`** — shows priority tier and remote eligibility per the spec's updated output shape.
 
 **Files:**
 - Create: `BE/src/cli/agent-run.ts`
@@ -2507,8 +3099,9 @@ describe("formatResultsForDisplay", () => {
           company: "Company A",
           location: "Remote India",
           salary: "6-8 LPA",
+          remoteEligibility: "India-eligible",
           overallScore: 94,
-          category: "Excellent",
+          priority: "P0",
         },
       ],
     };
@@ -2519,7 +3112,7 @@ describe("formatResultsForDisplay", () => {
     expect(output).toContain("New jobs: 21");
     expect(output).toContain("Filtered: 10");
     expect(output).toContain("Analyzed: 11");
-    expect(output).toContain("94% — Full Stack Engineer — Company A");
+    expect(output).toContain("P0 94% — Full Stack Engineer — Company A — India-eligible");
   });
 });
 ```
@@ -2552,7 +3145,9 @@ export function formatResultsForDisplay(result: PipelineResult): string {
   lines.push("");
 
   for (const match of result.matches) {
-    lines.push(`${Math.round(match.overallScore)}% — ${match.title} — ${match.company}`);
+    lines.push(
+      `${match.priority} ${Math.round(match.overallScore)}% — ${match.title} — ${match.company} — ${match.remoteEligibility}`,
+    );
   }
 
   return lines.join("\n");
@@ -2580,7 +3175,7 @@ Expected: PASS
 
 ```bash
 git add BE/src/cli/agent-run.ts BE/test/cli/agent-run.test.ts
-git commit -m "feat: add agent:run CLI entrypoint"
+git commit -m "feat: add agent:run CLI entrypoint with priority/eligibility output"
 ```
 
 ---
@@ -2589,7 +3184,7 @@ git commit -m "feat: add agent:run CLI entrypoint"
 
 **Files:** none created — this task runs the real system and records evidence.
 
-This is the spec's explicit gate (§13): Phase B (LinkedIn/Naukri) must not start until this passes for real, against real Greenhouse data and a real local Postgres.
+This is the spec's explicit gate (§14): Phase B (LinkedIn/Naukri) must not start until this passes for real, against real Greenhouse data and a real local Postgres.
 
 - [ ] **Step 1: Confirm prerequisites are running**
 
@@ -2640,11 +3235,19 @@ Check `/tmp/agent-run-2.log` — `New jobs: 0`, and confirm `agent_runs` has two
 psql "$DATABASE_URL" -c 'SELECT "runId", status, "jobsFound", "jobsNew" FROM agent_runs ORDER BY "startedAt";'
 ```
 
-- [ ] **Step 7: Report results to the user**
+- [ ] **Step 7: Spot-check eligibility and scoring on a real row**
 
-Share the actual `/tmp/agent-run-1.log` output, the duplicate-check query result, and the `agent_runs` table contents. Do not claim Phase A is complete without this evidence (per the org's verification-before-completion practice) — if any step fails, fix the root cause and rerun from Step 2, do not skip ahead.
+```bash
+psql "$DATABASE_URL" -c 'SELECT "skillMatch", "locationMatch", "overallScore", priority, "indiaEligible", "worldwideRemote", "eligibilityEvidence" FROM job_matches LIMIT 5;'
+```
 
-- [ ] **Step 8: Commit** (only if Step 4–7 required code fixes; otherwise nothing to commit)
+Expected: `"indiaEligible"`/`"worldwideRemote"` are `t`, `f`, or blank (NULL = UNKNOWN) — never all `t` across every row (that would indicate the "never infer UNKNOWN into true" rule isn't holding in practice against real LLM output). `"eligibilityEvidence"` is non-empty for every row. If real output violates this, treat it as a bug in the Task 12 prompt or the Task 8 partial-credit handling, not something to wave through.
+
+- [ ] **Step 8: Report results to the user**
+
+Share the actual `/tmp/agent-run-1.log` output, the duplicate-check query result, the `agent_runs` table contents, and the Step 7 spot-check. Do not claim Phase A is complete without this evidence (per the org's verification-before-completion practice) — if any step fails, fix the root cause and rerun from Step 2, do not skip ahead.
+
+- [ ] **Step 9: Commit** (only if Steps 4–8 required code fixes; otherwise nothing to commit)
 
 ```bash
 git add -A
