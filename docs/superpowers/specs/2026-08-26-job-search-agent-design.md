@@ -34,7 +34,9 @@ Pipeline (TypeScript — deterministic, fixed step order)
    ├─ Deduplicate (sourceJobId / canonical URL / company+title+location)
    ├─ Hard filters (seniority exclusions, role-keyword inclusion)
    ├─ For each surviving job → OpenClaw agent call (analysis step only)
-   │       tool allowlist: get_candidate_profile, analyze_job
+   │       tool allowlist: empty (candidate profile is embedded in the prompt
+   │                       text; the model returns JSON as its final reply,
+   │                       never via a tool call — verified in Task 11's spike)
    │       model: ollama/llama3.1
    │       returns: structured JSON — extracted facts (§8) + qualitative reasoning (§8) —
    │                never a numeric score
@@ -53,16 +55,17 @@ This design resolves the same OpenClaw-scope question as before: our TypeScript 
 
 OpenClaw is used a second, separate way in this phase: as the browser-driving mechanism for the LinkedIn/Naukri source (§4). That usage has nothing to do with LLM reasoning — it's OpenClaw's browser capability navigating a real Chrome session to run a search and extract structured data, more analogous to Greenhouse's API call than to the analysis step. It gets its own narrow tool/capability scope (browser navigation + extraction only) independent of the analysis session's allowlist.
 
-### OpenClaw — verified facts (2026-08-26)
+### OpenClaw — verified facts (2026-08-26, headless invocation confirmed 2026-09-25)
 
-OpenClaw (`github.com/openclaw/openclaw`, npm package `openclaw`, actively released — latest `2026.7.1-2` at time of writing) is a real, actively maintained personal-AI-assistant project with a Gateway control plane, channel integrations (WhatsApp/Telegram/Slack/Discord/etc.), a TypeScript plugin/tool SDK, and a plugin marketplace (ClawHub). Confirmed relevant to this project:
+OpenClaw (`github.com/openclaw/openclaw`, npm package `openclaw`, installed at `2026.5.12` in this repo) is a real, actively maintained personal-AI-assistant project with a Gateway control plane, channel integrations (WhatsApp/Telegram/Slack/Discord/etc.), a TypeScript plugin/tool SDK, and a plugin marketplace (ClawHub). Confirmed relevant to this project:
 
-- **Ollama support**: native, auto-detected at `127.0.0.1:11434`. Models referenced as `ollama/<model>`, e.g. `ollama/llama3.1`.
-- **Custom tools**: registerable via its plugin/tool SDK.
+- **Ollama support**: native, auto-detected at `127.0.0.1:11434`, zero config required. Models referenced as `ollama/<model>`, e.g. `ollama/llama3.1`.
 - **Cron**: listed as a first-class capability, usable for the later scheduled-run milestone.
-- **Sandboxing**: documented; tools run on-host by default unless sandboxing is configured.
+- **Sandboxing**: `openclaw sandbox` (Docker-based) and `openclaw sandbox explain` for inspecting the effective tool policy.
 
-Not yet verified: whether OpenClaw can be invoked headlessly for a single scoped task (no channel, no persistent session) and cleanly exit with structured output, versus requiring its full Gateway/session model to be running. This is the one real architectural unknown on the analysis side and is deliberately sequenced as an early Phase A task in Milestone 1 (§14) — a cheap spike before the rest of the pipeline is built assuming a particular integration shape. If headless invocation proves awkward, the fallback is calling Ollama directly through the `LLMProvider` interface (§6) for this phase, and revisiting OpenClaw integration once its non-interactive story is clearer.
+**Headless single-task invocation — verified working (Task 11 spike, `docs/superpowers/plans/openclaw-spike-notes.md`):** `openclaw agent --local --message "<prompt>" --model <provider/model> --json --to <placeholder> --timeout <seconds>` runs the embedded agent for exactly one task with no Gateway daemon, no channel/chat UI, and a confirmed clean process exit (no lingering process). `--to` is a required-but-inert flag (derives a session key; nothing is delivered anywhere unless `--deliver` is also passed). There is no per-invocation `--tools` flag — tool scoping is **config-based**: `openclaw config set tools.allow '[...]'`, confirmed to take effect via `openclaw doctor` and via the live run's `systemPromptReport.tools.entries` in the `--json` output (which also carries the final assistant text reply — the actual analysis JSON is parsed from there, not from a tool-call result). `openclaw setup` + `config set` + `models set` is the reliable non-interactive bootstrap sequence (`openclaw onboard --non-interactive` hung indefinitely in the spike and was abandoned).
+
+Not verified by the spike (out of its ~1hr timebox): registering a genuinely *custom* tool via the plugin/tool SDK. This doesn't block Phase A — the analysis design (§9) uses an **empty tool allowlist** since the model never needs to call a tool for this task — but it matters for Phase B, where the LinkedIn/Naukri browser-driven source will need OpenClaw's built-in `browser` tool (confirmed to exist, listed among tools denied-by-default in sandboxed mode) allowlisted the same way `exec` was verified here, not a custom-registered tool.
 
 ## 3. Candidate Profile
 
@@ -216,7 +219,7 @@ The LLM must never infer a skill from a related one (e.g., REST ≠ GraphQL, AWS
 
 ## 9. Security Boundaries
 
-Job descriptions are untrusted external content. They are passed into the OpenClaw analysis call strictly as tool-call *data*, never concatenated into anything resembling an instruction. The OpenClaw session for this step has a tool allowlist of exactly two read-oriented tools (`get_candidate_profile`, `analyze_job`) — it cannot reach `save_job` or any write-capable tool, so no adversarial job description can trigger an unintended write. No shell execution, no filesystem access, no env/secrets access, no arbitrary tool calls are exposed to the agent. Postgres credentials via env, never committed.
+Job descriptions are untrusted external content. They are passed into the OpenClaw analysis call strictly as prompt *data* (the candidate profile and job posting are embedded as text in the prompt), never concatenated into anything resembling an instruction. **The OpenClaw session for this step has an empty tool allowlist** — verified against Task 11's spike (§2), the model's job here is purely to read the prompt and return structured JSON as its final text reply; it never needs to invoke any tool to do that, so denying all tools is both simpler and strictly more secure than naming a two-tool allowlist that would never actually fire. It cannot reach `save_job`, shell execution, filesystem access, env/secrets access, or any other tool. Postgres credentials via env, never committed.
 
 **Evidence-based claims rule (elevated from §8 to a standing project rule):** the system must never assert a factual field it cannot support with evidence from the source — this governs eligibility (§5), salary, and, in later phases, contact information (§10). A missing fact is `UNKNOWN` or `null`, never fabricated. This was implicit in the original anti-hallucination rule; `Requirements/requirements.md` makes it explicit enough ("NEVER guess email addresses," "not an AI-generated guess") that it belongs here as a named boundary, even though contact discovery itself is deferred.
 
