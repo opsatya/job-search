@@ -17,11 +17,15 @@ export async function seedCandidateProfile(): Promise<void> {
   if (existing) {
     await prisma.candidateProfile.update({
       where: { id: existing.id },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- no index signature on CandidateProfile, Prisma's InputJsonValue needs this cast
       data: { data: profile as any },
     });
     return;
   }
-  await prisma.candidateProfile.create({ data: { data: profile as any } });
+  await prisma.candidateProfile.create({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above.
+    data: { data: profile as any },
+  });
 }
 
 export async function getCandidateProfile(): Promise<CandidateProfile> {
