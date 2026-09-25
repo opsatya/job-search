@@ -99,6 +99,13 @@ describe("scoreSkillMatch", () => {
     const facts = makeFacts({ requiredSkills: [], preferredSkills: [] });
     expect(scoreSkillMatch(CANDIDATE, facts)).toBe(30);
   });
+
+  it("weights required and preferred skills separately on a partial match", () => {
+    // 1 of 2 required (TypeScript matches, Rust doesn't), 0 of 1 preferred (Elixir doesn't).
+    const facts = makeFacts({ requiredSkills: ["TypeScript", "Rust"], preferredSkills: ["Elixir"] });
+    expect(scoreSkillMatch(CANDIDATE, facts)).toBe(Math.round(0.5 * 22 + 0 * 8));
+    expect(scoreSkillMatch(CANDIDATE, facts)).toBe(11);
+  });
 });
 
 describe("scoreExperienceMatch", () => {
@@ -115,6 +122,14 @@ describe("scoreExperienceMatch", () => {
   it("gives zero when the gap is 2 years or more", () => {
     const facts = makeFacts({ experienceRequirementYears: { min: 3 } }); // candidate has ~0.83y, gap >= 2
     expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(0);
+  });
+
+  it("falls off linearly for a mid-range gap", () => {
+    // candidate has 10 months (~0.833y); min 1.833y gives a gap of exactly 1 year (half of the
+    // 2-year zero-point), so the score should be exactly half of 20.
+    const facts = makeFacts({ experienceRequirementYears: { min: 1.833333333333 } });
+    expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(Math.round(20 * (1 - 1 / 2)));
+    expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(10);
   });
 });
 
@@ -146,6 +161,30 @@ describe("scoreLocationMatch", () => {
         indiaEligible: false,
         worldwideRemote: false,
         locationRestriction: "UK only",
+      },
+    });
+    expect(scoreLocationMatch(CANDIDATE, makeJob(), facts)).toBe(2);
+  });
+
+  it("gives partial credit — not the confirmed-restricted score — when indiaEligible is UNKNOWN even though worldwideRemote is confirmed false", () => {
+    const facts = makeFacts({
+      eligibility: {
+        ...makeFacts().eligibility,
+        indiaEligible: "UNKNOWN",
+        worldwideRemote: false,
+      },
+    });
+    const score = scoreLocationMatch(CANDIDATE, makeJob(), facts);
+    expect(score).toBe(10);
+    expect(score).not.toBe(2);
+  });
+
+  it("still gives the confirmed-restricted score when indiaEligible is false even though worldwideRemote is UNKNOWN (regression guard)", () => {
+    const facts = makeFacts({
+      eligibility: {
+        ...makeFacts().eligibility,
+        indiaEligible: false,
+        worldwideRemote: "UNKNOWN",
       },
     });
     expect(scoreLocationMatch(CANDIDATE, makeJob(), facts)).toBe(2);

@@ -94,10 +94,13 @@ export function scoreLocationMatch(
     if (eligibility.indiaEligible === true || eligibility.worldwideRemote === true) {
       return 20;
     }
-    if (eligibility.indiaEligible === "UNKNOWN" && eligibility.worldwideRemote === "UNKNOWN") {
-      return 10;
+    if (eligibility.indiaEligible === false) {
+      return 2;
     }
-    return 2;
+    // indiaEligible is "UNKNOWN" here (ruled out true and false above) — the candidate is
+    // India-based, so indiaEligible is the directly relevant signal; genuine uncertainty on
+    // it warrants partial credit regardless of worldwideRemote's value.
+    return 10;
   }
 
   const preferredCity = candidate.preferences.locations.some((city) =>
