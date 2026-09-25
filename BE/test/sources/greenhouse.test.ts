@@ -49,4 +49,20 @@ describe("GreenhouseSource", () => {
 
     expect(jobs).toHaveLength(1);
   });
+
+  it("continues past a board with malformed JSON", async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => {
+          throw new Error("Invalid JSON");
+        },
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => SAMPLE_RESPONSE });
+
+    const source = new GreenhouseSource(["bad-json-co", "acme"]);
+    const jobs = await source.search({ roles: [], locations: [] });
+
+    expect(jobs).toHaveLength(1);
+  });
 });

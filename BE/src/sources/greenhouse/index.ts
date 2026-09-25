@@ -26,19 +26,24 @@ export class GreenhouseSource implements JobSource {
         continue;
       }
 
-      const data = (await response.json()) as { jobs: GreenhouseApiJob[] };
+      try {
+        const data = (await response.json()) as { jobs: GreenhouseApiJob[] };
 
-      for (const job of data.jobs) {
-        results.push({
-          source: "greenhouse",
-          sourceJobId: String(job.id),
-          title: job.title,
-          company: token,
-          url: job.absolute_url,
-          locationText: job.location.name,
-          description: job.content,
-          postedAt: job.updated_at,
-        });
+        for (const job of data.jobs) {
+          results.push({
+            source: "greenhouse",
+            sourceJobId: String(job.id),
+            title: job.title,
+            company: token,
+            url: job.absolute_url,
+            locationText: job.location.name,
+            description: job.content,
+            postedAt: job.updated_at,
+          });
+        }
+      } catch {
+        // JSON parse failed or data is malformed; skip this board and continue
+        continue;
       }
     }
 
