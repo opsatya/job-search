@@ -1,0 +1,84 @@
+name: Satyajeet Singh
+location: Pune, Maharashtra, India
+
+education:
+  degree: MCA
+  university: Savitribai Phule Pune University
+  status: completed
+  cgpa: 7.91
+
+experience:
+  months: 10
+  production: true
+
+primaryRoles:
+  - Full Stack Developer
+  - Software Engineer
+  - Backend Engineer
+  - Node.js Developer
+  - TypeScript Developer
+
+secondaryRoles:
+  - React Developer
+  - Frontend Engineer
+  - Product Engineer
+
+skills:
+  languages:
+    - JavaScript
+    - TypeScript
+    - Java
+  backend:
+    - Node.js
+    - Fastify
+    - Express.js
+    - REST APIs
+    - Prisma ORM
+    - Zod
+    - JWT
+    - RBAC
+    - BullMQ
+    - Socket.IO
+    - Redis
+  frontend:
+    - React
+    - Redux Toolkit
+    - Vite
+    - Tailwind CSS
+    - Material UI
+    - Formik
+    - Axios
+  databases:
+    - PostgreSQL
+    - MongoDB
+    - Redis
+  cloudDevOps:
+    - AWS EC2
+    - AWS S3
+    - Docker
+    - Linux
+    - Nginx
+    - Git
+    - GitHub Actions
+    - CI/CD
+  architecture:
+    - Monorepos
+    - OpenAPI
+    - Swagger
+
+preferences:
+  remotePreferred: true
+  locations:
+    - Pune
+    - Bangalore
+    - Hyderabad
+    - Mumbai
+    - Delhi NCR
+    - Chennai
+    - Noida
+  internationalRemote: true
+  salaryFloorLpa: 5
+  salaryTargetLpa: 6
+  salaryPreferredLpa: 8
+  startupFriendly: true
+  productCompanyPreferred: true
