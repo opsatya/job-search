@@ -3283,10 +3283,15 @@ async function main(): Promise<void> {
   console.log(formatResultsForDisplay(result));
 }
 
-main().catch((err) => {
-  console.error("Agent run failed:", err);
-  process.exitCode = 1;
-});
+// Guard against running as a side effect of being imported (e.g. by the
+// unit test above, which only needs formatResultsForDisplay) — only run
+// main() when this file is executed directly, not merely require()'d.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("Agent run failed:", err);
+    process.exitCode = 1;
+  });
+}
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
