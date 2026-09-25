@@ -1222,6 +1222,15 @@ describe("scoreSkillMatch", () => {
     const facts = makeFacts({ requiredSkills: [], preferredSkills: [] });
     expect(scoreSkillMatch(CANDIDATE, facts)).toBe(30);
   });
+
+  it("pins the required/preferred weight split on a partial match", () => {
+    // 1 of 2 required matched (TypeScript yes, Rust no) -> ratio 0.5
+    // 0 of 1 preferred matched (Elixir no) -> ratio 0
+    // Math.round(0.5 * 22 + 0 * 8) = 11 — this locks in REQUIRED_SKILL_WEIGHT=22 /
+    // PREFERRED_SKILL_WEIGHT=8 so the split can't silently drift.
+    const facts = makeFacts({ requiredSkills: ["TypeScript", "Rust"], preferredSkills: ["Elixir"] });
+    expect(scoreSkillMatch(CANDIDATE, facts)).toBe(11);
+  });
 });
 
 describe("scoreExperienceMatch", () => {
@@ -1233,6 +1242,13 @@ describe("scoreExperienceMatch", () => {
   it("gives full points when no minimum is stated", () => {
     const facts = makeFacts({ experienceRequirementYears: {} });
     expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(20);
+  });
+
+  it("applies proportional (linear) falloff at a mid-range gap, not just the two extremes", () => {
+    // Candidate has 10 months (~0.833y). min: 1.833 gives a gap of exactly 1 year,
+    // half of EXPERIENCE_GAP_YEARS_FOR_ZERO (2) -> Math.round(20 * (1 - 1/2)) = 10.
+    const facts = makeFacts({ experienceRequirementYears: { min: 1.833 } });
+    expect(scoreExperienceMatch(CANDIDATE, facts)).toBe(10);
   });
 
   it("gives zero when the gap is 2 years or more", () => {
@@ -1269,6 +1285,34 @@ describe("scoreLocationMatch", () => {
         indiaEligible: false,
         worldwideRemote: false,
         locationRestriction: "UK only",
+      },
+    });
+    expect(scoreLocationMatch(CANDIDATE, makeJob(), facts)).toBe(2);
+  });
+
+  it("gives partial credit — not the restricted score — when only indiaEligible is UNKNOWN", () => {
+    // Regression test: indiaEligible UNKNOWN + worldwideRemote confirmed false
+    // must NOT collapse to the same score as confirmed-restricted (2).
+    const facts = makeFacts({
+      eligibility: {
+        ...makeFacts().eligibility,
+        indiaEligible: "UNKNOWN",
+        worldwideRemote: false,
+      },
+    });
+    const score = scoreLocationMatch(CANDIDATE, makeJob(), facts);
+    expect(score).toBe(10);
+    expect(score).not.toBe(2);
+  });
+
+  it("gives the restricted score when indiaEligible is confirmed false, even if worldwideRemote is UNKNOWN", () => {
+    // indiaEligible is the dominant signal for an India-based candidate — a
+    // confirmed false disqualifies regardless of an unclear worldwideRemote.
+    const facts = makeFacts({
+      eligibility: {
+        ...makeFacts().eligibility,
+        indiaEligible: false,
+        worldwideRemote: "UNKNOWN",
       },
     });
     expect(scoreLocationMatch(CANDIDATE, makeJob(), facts)).toBe(2);
@@ -1470,10 +1514,13 @@ export function scoreLocationMatch(
     if (eligibility.indiaEligible === true || eligibility.worldwideRemote === true) {
       return 20;
     }
-    if (eligibility.indiaEligible === "UNKNOWN" && eligibility.worldwideRemote === "UNKNOWN") {
-      return 10;
+    if (eligibility.indiaEligible === false) {
+      return 2;
     }
-    return 2;
+    // indiaEligible is "UNKNOWN" here (ruled out true and false above) — the
+    // candidate is India-based, so indiaEligible is the dominant signal;
+    // genuine uncertainty remains regardless of worldwideRemote's value.
+    return 10;
   }
 
   const preferredCity = candidate.preferences.locations.some((city) =>
