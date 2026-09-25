@@ -181,7 +181,7 @@ model JobMatch {
   interviewTopics             String[]
   factLabels                   Json    // Record<string, "FACT" | "INFERENCE" | "UNKNOWN">
 
-  // Eligibility/evidence fields (spec §5) — null on the two Boolean? columns means UNKNOWN
+  // Eligibility/evidence fields (spec §5) — null on the four Boolean? columns below means UNKNOWN
   remoteStatus                String
   indiaEligible                Boolean?
   worldwideRemote              Boolean?
