@@ -499,11 +499,13 @@ export async function seedCandidateProfile(): Promise<void> {
   if (existing) {
     await prisma.candidateProfile.update({
       where: { id: existing.id },
-      data: { data: profile },
+      // Prisma's InputJsonValue has no index signature match for a concrete
+      // interface like CandidateProfile — `as any` is the standard workaround.
+      data: { data: profile as any },
     });
     return;
   }
-  await prisma.candidateProfile.create({ data: { data: profile } });
+  await prisma.candidateProfile.create({ data: { data: profile as any } });
 }
 
 export async function getCandidateProfile(): Promise<CandidateProfile> {
@@ -511,7 +513,9 @@ export async function getCandidateProfile(): Promise<CandidateProfile> {
   if (!record) {
     throw new Error("Candidate profile not seeded — run seedCandidateProfile() first.");
   }
-  return record.data as CandidateProfile;
+  // JsonValue's union doesn't sufficiently overlap with CandidateProfile for
+  // a single cast (TS2352) — go through `unknown` first.
+  return record.data as unknown as CandidateProfile;
 }
 ```
 
