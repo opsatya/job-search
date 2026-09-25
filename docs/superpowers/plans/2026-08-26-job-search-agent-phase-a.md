@@ -2049,50 +2049,55 @@ export async function saveJobMatch(
   const overallScore = calculateOverallScore(scores);
   const priority = categorize(overallScore);
 
-  await prisma.jobMatch.create({
-    data: {
-      jobId,
-      skillMatch: scores.skillMatch,
-      experienceMatch: scores.experienceMatch,
-      locationMatch: scores.locationMatch,
-      seniorityMatch: scores.seniorityMatch,
-      educationMatch: scores.educationMatch,
-      salaryMatch: scores.salaryMatch,
-      domainMatch: scores.domainMatch,
-      overallScore,
-      priority,
+  // Both writes must commit or roll back together — a partial failure would
+  // leave a JobMatch row persisted while its parent Job row stays stuck at
+  // matchScore: null / status: "new" forever (dedup is keyed on the Job row
+  // already existing, so it would never be re-analyzed).
+  await prisma.$transaction([
+    prisma.jobMatch.create({
+      data: {
+        jobId,
+        skillMatch: scores.skillMatch,
+        experienceMatch: scores.experienceMatch,
+        locationMatch: scores.locationMatch,
+        seniorityMatch: scores.seniorityMatch,
+        educationMatch: scores.educationMatch,
+        salaryMatch: scores.salaryMatch,
+        domainMatch: scores.domainMatch,
+        overallScore,
+        priority,
 
-      requiredSkills: analysis.requiredSkills,
-      preferredSkills: analysis.preferredSkills,
-      seniorityLevel: analysis.seniorityLevel,
-      educationRequirement: analysis.educationRequirement,
-      domain: analysis.domain,
+        requiredSkills: analysis.requiredSkills,
+        preferredSkills: analysis.preferredSkills,
+        seniorityLevel: analysis.seniorityLevel,
+        educationRequirement: analysis.educationRequirement,
+        domain: analysis.domain,
 
-      whyMatches: analysis.whyMatches,
-      strongestMatchingSkills: analysis.strongestMatchingSkills,
-      missingSkills: analysis.missingSkills,
-      experienceGap: analysis.experienceGap,
-      concerns: analysis.concerns,
-      applicationRecommendation: analysis.applicationRecommendation,
-      interviewTopics: analysis.interviewTopicsToPrepare,
-      factLabels: analysis.factLabels,
+        whyMatches: analysis.whyMatches,
+        strongestMatchingSkills: analysis.strongestMatchingSkills,
+        missingSkills: analysis.missingSkills,
+        experienceGap: analysis.experienceGap,
+        concerns: analysis.concerns,
+        applicationRecommendation: analysis.applicationRecommendation,
+        interviewTopics: analysis.interviewTopicsToPrepare,
+        factLabels: analysis.factLabels,
 
-      remoteStatus: analysis.eligibility.remoteStatus,
-      indiaEligible: triToDb(analysis.eligibility.indiaEligible),
-      worldwideRemote: triToDb(analysis.eligibility.worldwideRemote),
-      locationRestriction: analysis.eligibility.locationRestriction,
-      visaRequired: triToDb(analysis.eligibility.visaRequired),
-      relocationRequired: triToDb(analysis.eligibility.relocationRequired),
-      eligibilityConfidence: analysis.eligibility.eligibilityConfidence,
-      eligibilityEvidence: analysis.eligibility.eligibilityEvidence,
-      salaryEvidence: analysis.eligibility.salaryEvidence,
-    },
-  });
-
-  await prisma.job.update({
-    where: { id: jobId },
-    data: { matchScore: overallScore, status: "reviewed" },
-  });
+        remoteStatus: analysis.eligibility.remoteStatus,
+        indiaEligible: triToDb(analysis.eligibility.indiaEligible),
+        worldwideRemote: triToDb(analysis.eligibility.worldwideRemote),
+        locationRestriction: analysis.eligibility.locationRestriction,
+        visaRequired: triToDb(analysis.eligibility.visaRequired),
+        relocationRequired: triToDb(analysis.eligibility.relocationRequired),
+        eligibilityConfidence: analysis.eligibility.eligibilityConfidence,
+        eligibilityEvidence: analysis.eligibility.eligibilityEvidence,
+        salaryEvidence: analysis.eligibility.salaryEvidence,
+      },
+    }),
+    prisma.job.update({
+      where: { id: jobId },
+      data: { matchScore: overallScore, status: "reviewed" },
+    }),
+  ]);
 
   return { overallScore, priority };
 }
