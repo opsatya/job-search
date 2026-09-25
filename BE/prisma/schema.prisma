@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model CandidateProfile {
+  id        String   @id @default(cuid())
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("candidate_profile")
+}
+
+model Job {
+  id             String    @id @default(cuid())
+  source         String
+  sourceJobId    String?
+  dedupeKey      String    @unique
+  company        String
+  title          String
+  description    String
+  url            String
+  companyUrl     String?
+  locations      String[]
+  remote         Boolean?
+  employmentType String?
+  experienceMin  Int?
+  experienceMax  Int?
+  salaryMin      Int?
+  salaryMax      Int?
+  salaryCurrency String?
+  technologies   String[]
+  postedAt       DateTime?
+  discoveredAt   DateTime  @default(now())
+  status         String    @default("new")
+  matchScore     Float?
+
+  matches JobMatch[]
+
+  @@map("jobs")
+}
+
+model JobMatch {
+  id                        String   @id @default(cuid())
+  jobId                     String
+  job                       Job      @relation(fields: [jobId], references: [id])
+
+  // Deterministic category scores (spec §8) — computed in TypeScript, never by the LLM
+  skillMatch                Float
+  experienceMatch           Float
+  locationMatch             Float
+  seniorityMatch            Float
+  educationMatch            Float
+  salaryMatch               Float
+  domainMatch               Float
+  overallScore              Float
+  priority                  String   // "P0" | "P1" | "P2" | "P3"
+
+  // Extracted facts (LLM output, used as scoring input — not scores themselves)
+  requiredSkills            String[]
+  preferredSkills           String[]
+  seniorityLevel            String
+  educationRequirement      String?
+  domain                    String?
+
+  // Qualitative reasoning (LLM output, surfaced to the user, never scored)
+  whyMatches                String
+  strongestMatchingSkills   String[]
+  missingSkills              String[]
+  experienceGap              String?
+  concerns                   String[]
+  applicationRecommendation  String
+  interviewTopics             String[]
+  factLabels                   Json    // Record<string, "FACT" | "INFERENCE" | "UNKNOWN">
+
+  // Eligibility/evidence fields (spec §5) — null on the two Boolean? columns means UNKNOWN
+  remoteStatus                String
+  indiaEligible                Boolean?
+  worldwideRemote              Boolean?
+  locationRestriction           String?
+  visaRequired                   Boolean?
+  relocationRequired             Boolean?
+  eligibilityConfidence           String
+  eligibilityEvidence              String
+  salaryEvidence                   String?
+
+  createdAt                DateTime @default(now())
+
+  @@map("job_matches")
+}
+
+model AgentRun {
+  id             String    @id @default(cuid())
+  runId          String    @unique
+  status         String
+  sourcesChecked Int
+  jobsFound      Int
+  jobsNew        Int
+  jobsFiltered   Int
+  jobsAnalyzed   Int
+  strongMatches  Int
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  @@map("agent_runs")
+}
+
+model Application {
+  id        String   @id @default(cuid())
+  jobId     String
+  status    String   @default("new")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("applications")
+}
