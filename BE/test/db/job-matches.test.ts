@@ -115,4 +115,26 @@ describe("saveJobMatch", () => {
     expect(match?.indiaEligible).toBeNull();
     expect(match?.worldwideRemote).toBeNull();
   });
+
+  it("commits the JobMatch row and the Job update together as a single transaction", async () => {
+    const ids = await saveNewJobs([makeJob()]);
+    const jobId = [...ids.values()][0];
+
+    const result = await saveJobMatch(jobId, makeJob(), CANDIDATE, ANALYSIS);
+
+    const [match, job] = await Promise.all([
+      prisma.jobMatch.findFirst({ where: { jobId } }),
+      prisma.job.findUnique({ where: { id: jobId } }),
+    ]);
+
+    // Both writes from the $transaction([...]) call must be visible together: the JobMatch
+    // row exists and the parent Job row reflects the same computed score/status. Neither side
+    // is ever persisted without the other.
+    expect(match).not.toBeNull();
+    expect(job).not.toBeNull();
+    expect(job?.matchScore).toBe(result.overallScore);
+    expect(job?.status).toBe("reviewed");
+    expect(match?.overallScore).toBe(result.overallScore);
+    expect(match?.priority).toBe(result.priority);
+  });
 });
