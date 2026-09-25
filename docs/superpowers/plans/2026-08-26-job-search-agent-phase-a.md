@@ -3125,21 +3125,30 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
 
   const matches: RankedMatch[] = [];
   for (const job of survivors) {
-    const analysis = await analyzeJob(job);
     const jobId = savedIds.get(dedupeKey(job));
     if (!jobId) continue;
 
-    const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
+    // One job's failure must not crash the whole run — matches already
+    // accumulated for prior survivors would otherwise be discarded, and
+    // completeAgentRun below would never run, leaving the AgentRun row
+    // stuck at "in_progress" forever.
+    try {
+      const analysis = await analyzeJob(job);
+      const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
 
-    matches.push({
-      title: job.title,
-      company: job.company,
-      location: job.locations.join(", "),
-      salary: formatSalary(job),
-      remoteEligibility: summarizeEligibility(analysis),
-      overallScore,
-      priority,
-    });
+      matches.push({
+        title: job.title,
+        company: job.company,
+        location: job.locations.join(", "),
+        salary: formatSalary(job),
+        remoteEligibility: summarizeEligibility(analysis),
+        overallScore,
+        priority,
+      });
+    } catch (err) {
+      console.error(`Failed to analyze/persist job ${jobId}:`, err);
+      continue;
+    }
   }
 
   matches.sort((a, b) => b.overallScore - a.overallScore);
