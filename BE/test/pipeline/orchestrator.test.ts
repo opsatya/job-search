@@ -122,4 +122,65 @@ describe("runPipeline", () => {
     expect(result.jobsFiltered).toBe(1);
     expect(analyzeModule.analyzeJob).not.toHaveBeenCalled();
   });
+
+  it("continues the run when one job fails to analyze or persist", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const RAW_JOB_2: RawJob = {
+      ...RAW_JOB,
+      sourceJobId: "2",
+      title: "Backend Engineer",
+      url: "https://boards.greenhouse.io/acme/jobs/2",
+    };
+
+    jest
+      .spyOn(greenhouseModule.GreenhouseSource.prototype, "search")
+      .mockResolvedValue([RAW_JOB, RAW_JOB_2]);
+    jest.spyOn(jobsDb, "saveNewJobs").mockResolvedValue(
+      new Map([
+        ["id:greenhouse:1", "db-id-1"],
+        ["id:greenhouse:2", "db-id-2"],
+      ]),
+    );
+
+    jest.spyOn(analyzeModule, "analyzeJob").mockImplementation(async (job) => {
+      if (job.sourceJobId === "1") {
+        throw new Error("OpenClaw session failed unexpectedly");
+      }
+      return {
+        requiredSkills: ["Node.js"],
+        preferredSkills: ["TypeScript"],
+        experienceRequirementYears: {},
+        seniorityLevel: "junior",
+        domain: "SaaS",
+        eligibility: {
+          remoteStatus: "remote",
+          indiaEligible: true,
+          worldwideRemote: false,
+          visaRequired: false,
+          relocationRequired: false,
+          eligibilityConfidence: "high",
+          eligibilityEvidence: "Job posting states: Remote - India",
+        },
+        whyMatches: "Great fit.",
+        strongestMatchingSkills: ["Node.js"],
+        missingSkills: [],
+        concerns: [],
+        applicationRecommendation: "strong_apply",
+        interviewTopicsToPrepare: [],
+        factLabels: {},
+      };
+    });
+
+    const result = await runPipeline("test-run-4");
+
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].title).toBe("Backend Engineer");
+    expect(agentRunsDb.completeAgentRun).toHaveBeenCalledWith(
+      "test-run-4",
+      expect.objectContaining({ jobsNew: 2 }),
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
 });

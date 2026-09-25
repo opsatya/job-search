@@ -66,21 +66,30 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
 
   const matches: RankedMatch[] = [];
   for (const job of survivors) {
-    const analysis = await analyzeJob(job);
     const jobId = savedIds.get(dedupeKey(job));
     if (!jobId) continue;
 
-    const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
+    try {
+      const analysis = await analyzeJob(job);
+      const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
 
-    matches.push({
-      title: job.title,
-      company: job.company,
-      location: job.locations.join(", "),
-      salary: formatSalary(job),
-      remoteEligibility: summarizeEligibility(analysis),
-      overallScore,
-      priority,
-    });
+      matches.push({
+        title: job.title,
+        company: job.company,
+        location: job.locations.join(", "),
+        salary: formatSalary(job),
+        remoteEligibility: summarizeEligibility(analysis),
+        overallScore,
+        priority,
+      });
+    } catch (err) {
+      // One job failing to analyze or persist (e.g. a transient DB error inside
+      // saveJobMatch's transaction) must not take down the whole run — log and
+      // move on, same "one failure doesn't kill the run" principle already
+      // applied to per-source fetch failures and analysis failures.
+      console.error(`runPipeline: failed to process job ${jobId} (${job.title}):`, err);
+      continue;
+    }
   }
 
   matches.sort((a, b) => b.overallScore - a.overallScore);
