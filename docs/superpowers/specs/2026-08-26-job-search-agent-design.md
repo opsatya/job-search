@@ -6,6 +6,8 @@ Source requirements: `Requirements/requirements.md` (supersedes the original roo
 
 **2026-09-25 revision note:** `Requirements/requirements.md` replaced the original requirements doc with a substantially larger scope — Excel export, contact discovery, company tracking, a 3-bucket search strategy, and an eligibility/evidence system. This revision folds in the changes that reshape the *existing* Phase A pipeline (candidate facts, scoring formula, eligibility fields) and explicitly defers the new independent subsystems to later phases (§10). At the time of this revision, Task 1 (BE scaffold) was complete and Task 2 (Prisma schema) was blocked on Postgres credentials — neither is invalidated by this update.
 
+**2026-10-14 revision note (from Task 15's real end-to-end run):** the per-job analysis step no longer goes through OpenClaw. Every real invocation of `openclaw agent` returned free-form prose instead of JSON — its CLI has no output-schema flag, and the ~27K-char persona/workspace system prompt it injects overrides the "return only JSON" instruction. Analysis now calls Ollama's `/api/generate` directly through `LLMProvider`/`OllamaProvider` with a JSON-schema `format` constraint, which is the fallback §6 and the Phase A plan already provided for. Everything else about the boundary is unchanged: the LLM still returns extracted facts + qualitative reasoning only, never a score, and it still has no tools at all. OpenClaw remains the planned mechanism for Phase B's browser-driven LinkedIn/Naukri source (§4) — the Task 11 spike findings still apply there. The same run also surfaced, and fixed: Greenhouse descriptions arriving entity-encoded (so HTML was never stripped), Ollama's 4096-token default context silently discarding the top of long prompts, and failed analyses being scored as if they were real (§13).
+
 ## 1. Purpose
 
 A personal AI-powered job discovery and matching agent for Satyajeet Singh. This phase proves one loop works end to end:
@@ -33,11 +35,10 @@ Pipeline (TypeScript — deterministic, fixed step order)
    ├─ Normalize → canonical Job
    ├─ Deduplicate (sourceJobId / canonical URL / company+title+location)
    ├─ Hard filters (seniority exclusions, role-keyword inclusion)
-   ├─ For each surviving job → OpenClaw agent call (analysis step only)
-   │       tool allowlist: empty (candidate profile is embedded in the prompt
-   │                       text; the model returns JSON as its final reply,
-   │                       never via a tool call — verified in Task 11's spike)
-   │       model: ollama/llama3.1
+   ├─ For each surviving job → direct Ollama call via LLMProvider (analysis step only)
+   │       no tools at all (candidate profile is embedded in the prompt text;
+   │                        output constrained by a JSON-schema `format`)
+   │       model: llama3.1, explicit num_ctx (default 8192)
    │       returns: structured JSON — extracted facts (§8) + qualitative reasoning (§8) —
    │                never a numeric score
    ├─ Deterministic category scores + overall score (§8 formula, computed in our code — never by the LLM)
@@ -51,7 +52,7 @@ CLI output: ranked matches
 
 `Requirements/requirements.md` restates the same hybrid-architecture rule the original requirements gave: "Use deterministic scoring in TypeScript. LLM analysis may provide structured reasoning but must not replace deterministic scoring" and "Do NOT produce an unexplained AI score." This spec already drew that boundary in the original design (LLM never computes the final score); this revision tightens it further — the LLM no longer produces *any* of the seven category subscores either (§8). Its job narrows to two things: extracting structured, evidence-backed facts from the free-text job posting (skills mentioned, experience requirement, eligibility signals, salary if stated), and producing qualitative narrative reasoning (why it matches, gaps, concerns). All seven category scores are computed by pure TypeScript functions from those extracted facts and the candidate profile — the LLM never sees or influences the point values directly.
 
-This design resolves the same OpenClaw-scope question as before: our TypeScript code drives the fixed pipeline end to end (search → normalize → dedupe → filter → extract+reason → score → persist), and OpenClaw's tool-calling agent is invoked narrowly, once per job that survives filtering, to produce the structured extraction+reasoning JSON. This keeps the pipeline deterministic, testable, and debuggable, while still giving OpenClaw the one job that genuinely needs LLM judgment: reading unstructured text.
+This design resolves the same OpenClaw-scope question as before: our TypeScript code drives the fixed pipeline end to end (search → normalize → dedupe → filter → extract+reason → score → persist), and the LLM is invoked narrowly, once per job that survives filtering, to produce the structured extraction+reasoning JSON. This keeps the pipeline deterministic, testable, and debuggable, while still giving the LLM the one job that genuinely needs judgment: reading unstructured text. (Originally designed as an OpenClaw agent call; as of 2026-10-14 it is a direct schema-constrained Ollama call — see the revision note above.)
 
 OpenClaw is used a second, separate way in this phase: as the browser-driving mechanism for the LinkedIn/Naukri source (§4). That usage has nothing to do with LLM reasoning — it's OpenClaw's browser capability navigating a real Chrome session to run a search and extract structured data, more analogous to Greenhouse's API call than to the analysis step. It gets its own narrow tool/capability scope (browser navigation + extraction only) independent of the analysis session's allowlist.
 
@@ -138,7 +139,7 @@ interface LLMProvider {
 }
 ```
 
-`OllamaProvider` is the initial implementation, configured via `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://127.0.0.1:11434`, `OLLAMA_MODEL=llama3.1` (confirmed installed locally). Not hard-coded — replaceable later with OpenAI/Gemini/Anthropic/OpenRouter/another local model. This interface exists independently of the OpenClaw integration so the LLM call can be made directly if the OpenClaw headless spike (§14) doesn't pan out.
+`OllamaProvider` is the initial implementation, configured via `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://127.0.0.1:11434`, `OLLAMA_MODEL=llama3.1` (confirmed installed locally). Not hard-coded — replaceable later with OpenAI/Gemini/Anthropic/OpenRouter/another local model. This interface exists independently of the OpenClaw integration so the LLM call can be made directly if OpenClaw doesn't pan out — which is what happened: as of 2026-10-14 the analysis step uses it directly. `OLLAMA_NUM_CTX` (default 8192) is always sent explicitly, because Ollama's 4096-token default silently discards the start of over-long prompts; generations that end with `done_reason` other than `stop`, or that fill the context window, are rejected as unreliable.
 
 ## 7. Database
 
@@ -146,7 +147,7 @@ PostgreSQL (already available locally) + Prisma. Initial tables: `candidate_prof
 
 ## 8. Job Analysis: Extraction, Deterministic Scoring, and Qualitative Reasoning
 
-**This section replaces the original design's single LLM-scoring step.** One OpenClaw call per surviving job still happens, but its output schema is richer and none of it is a point value:
+**This section replaces the original design's single LLM-scoring step.** One LLM call per surviving job still happens (direct Ollama since 2026-10-14), but its output schema is richer and none of it is a point value:
 
 ```typescript
 interface JobAnalysisResult {
@@ -219,7 +220,7 @@ The LLM must never infer a skill from a related one (e.g., REST ≠ GraphQL, AWS
 
 ## 9. Security Boundaries
 
-Job descriptions are untrusted external content. They are passed into the OpenClaw analysis call strictly as prompt *data* (the candidate profile and job posting are embedded as text in the prompt), never concatenated into anything resembling an instruction. **The OpenClaw session for this step has an empty tool allowlist** — verified against Task 11's spike (§2), the model's job here is purely to read the prompt and return structured JSON as its final text reply; it never needs to invoke any tool to do that, so denying all tools is both simpler and strictly more secure than naming a two-tool allowlist that would never actually fire. It cannot reach `save_job`, shell execution, filesystem access, env/secrets access, or any other tool. Postgres credentials via env, never committed.
+Job descriptions are untrusted external content. They are passed into the analysis call strictly as prompt *data* (the candidate profile and job posting are embedded as text in the prompt), never concatenated into anything resembling an instruction. **The analysis call has no tools at all** — it is a plain schema-constrained Ollama generation (since 2026-10-14; previously an OpenClaw session with an empty tool allowlist). The model's job is purely to read the prompt and return structured JSON. It cannot reach `save_job`, shell execution, filesystem access, env/secrets access, or any other tool. Postgres credentials via env, never committed.
 
 **Evidence-based claims rule (elevated from §8 to a standing project rule):** the system must never assert a factual field it cannot support with evidence from the source — this governs eligibility (§5), salary, and, in later phases, contact information (§10). A missing fact is `UNKNOWN` or `null`, never fabricated. This was implicit in the original anti-hallucination rule; `Requirements/requirements.md` makes it explicit enough ("NEVER guess email addresses," "not an AI-generated guess") that it belongs here as a named boundary, even though contact discovery itself is deferred.
 
@@ -250,7 +251,7 @@ BE/                backend: pipeline, sources, agent, db — all of Milestone 1'
     cli/           agent:run entrypoint
     pipeline/      orchestrator, hard-filter rules, dedup, deterministic scoring (§8)
     sources/       JobSource interface + greenhouse/, linkedin/, naukri/
-    agent/         OpenClaw integration: extraction+reasoning tool + browser-driven search
+    agent/         job analysis (direct Ollama call) + OpenClaw client (kept for Phase B browser-driven search)
     llm/           LLMProvider interface + OllamaProvider
     db/            Prisma schema + client
     config/        candidate profile loader (reads profile/candidate.yaml), search config
@@ -265,22 +266,22 @@ FE/                dashboard — already scaffolded (Vite + React 19 + TypeScrip
 
 ## 12. Testing Strategy
 
-Dedup logic, hard filters, and every category-scoring function (§8) are pure functions, fully unit-tested without DB/network dependencies — this matters more now than in the original design, since there are seven scoring functions instead of one weighted formula, each with its own edge cases (`UNKNOWN` eligibility, undisclosed salary). `JobSource` and the OpenClaw agent call are mocked in pipeline tests. A small set of integration tests run against a real (test) Postgres via Prisma. Running the agent twice in an integration test must assert zero duplicate job rows.
+Dedup logic, hard filters, and every category-scoring function (§8) are pure functions, fully unit-tested without DB/network dependencies — this matters more now than in the original design, since there are seven scoring functions instead of one weighted formula, each with its own edge cases (`UNKNOWN` eligibility, undisclosed salary). `JobSource` and the analysis call are mocked in pipeline tests. A small set of integration tests run against a real (test) Postgres via Prisma. Running the agent twice in an integration test must assert zero duplicate job rows.
 
 ## 13. Error Handling
 
-Each pipeline stage is a typed async function; stages don't reach into each other's internals. Per-source fetch failures are caught individually — one source failing doesn't kill the run — and reflected in `agent_runs`. OpenClaw analysis failures (malformed JSON, timeout) fall back to `applicationRecommendation: "needs_review"` with all eligibility fields `"UNKNOWN"` rather than crashing the run or dropping the job; the job is still saved with `status: "new"` and null score fields so nothing is silently lost.
+Each pipeline stage is a typed async function; stages don't reach into each other's internals. Per-source fetch failures are caught individually — one source failing doesn't kill the run — and reflected in `agent_runs`. Analysis failures (malformed JSON, timeout, HTTP error, truncated generation) fall back to `applicationRecommendation: "needs_review"` with all eligibility fields `"UNKNOWN"` rather than crashing the run or dropping the job; the job is still saved with `status: "new"`, and its `job_matches` row has null category scores, overall score, and priority — a fallback carries no real facts, so it is never scored (a real run once ranked a timed-out job 76/P2 before this was enforced). The CLI reports these as "Needs review (analysis failed)" instead of ranking them.
 
 ## 14. Milestone 1 Scope
 
 **Phase A — Greenhouse path (build and verify first):**
 
 1. Repo scaffold (`BE/`: TypeScript, ESLint/Prettier, Jest) on `feature/agent`. **Done** (2026-08-26).
-2. Prisma schema + migration (5 tables from §7, including the extended `job_matches` columns) against the existing local Postgres. **Blocked** on Postgres credentials as of this revision.
+2. Prisma schema + migration (5 tables from §7, including the extended `job_matches` columns) against the existing local Postgres. **Done** (2026-09-25).
 3. Candidate profile: `profile/candidate.yaml` (§3) + loader/seed function.
 4. Greenhouse `JobSource` (public API, no auth).
 5. Normalize + dedupe + hard filters (pure, unit-tested).
-6. Spike: confirm OpenClaw can run headlessly with a scoped tool allowlist against `ollama/llama3.1` and return valid structured JSON matching `JobAnalysisResult` (§8) — de-risks the analysis-side unknown (§2) before the rest of the pipeline depends on it.
+6. Spike: confirm OpenClaw can run headlessly with a scoped tool allowlist against `ollama/llama3.1` and return valid structured JSON matching `JobAnalysisResult` (§8) — de-risks the analysis-side unknown (§2) before the rest of the pipeline depends on it. **Done** (2026-09-25) — but superseded for analysis on 2026-10-14 (see revision note): headless invocation worked, JSON output did not.
 7. Wire the spike into the real extraction+reasoning call; implement the seven deterministic category-scoring functions (§8) in our code.
 8. `npm run agent:run` CLI producing ranked-matches output (company, role, location, remote eligibility, salary, P0–P3 priority, overall score).
 9. Verify: running the agent twice produces zero duplicate job rows.

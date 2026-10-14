@@ -98,7 +98,7 @@ No changes needed. The canonical `Job`/`JobStatus` type (`BE/src/types/job.ts`) 
 
 **Prerequisite:** this task needs a real, reachable Postgres with a role that can create/migrate a database. If `DATABASE_URL` isn't already resolvable, stop and ask the user for connection details rather than guessing credentials — do not invent a workaround (no SQLite, no skipping the real migration).
 
-- [ ] **Step 1: Create `BE/prisma/schema.prisma`**
+- [x] **Step 1: Create `BE/prisma/schema.prisma`**
 
 ```prisma
 generator client {
@@ -226,7 +226,7 @@ model Application {
 
 **Note on tri-state eligibility fields:** `indiaEligible`, `worldwideRemote`, `visaRequired`, `relocationRequired` are nullable `Boolean?` columns where **`null` means `"UNKNOWN"`** — this is the DB-level encoding of the TypeScript `Tri = boolean | "UNKNOWN"` type Task 8 defines. Task 10's persistence code is responsible for converting between the two; do not add a separate string-typed "UNKNOWN" sentinel column.
 
-- [ ] **Step 2: Set up local `.env` and run the migration**
+- [x] **Step 2: Set up local `.env` and run the migration**
 
 ```bash
 cd BE
@@ -238,7 +238,7 @@ npx prisma generate
 
 Expected: migration applies cleanly, five tables exist (`candidate_profile`, `jobs`, `job_matches`, `agent_runs`, `applications`), `@prisma/client` types are generated.
 
-- [ ] **Step 3: Write the failing test for the DB client**
+- [x] **Step 3: Write the failing test for the DB client**
 
 ```typescript
 // BE/test/db/client.test.ts
@@ -256,12 +256,12 @@ describe("prisma client", () => {
 });
 ```
 
-- [ ] **Step 4: Run test to verify it fails**
+- [x] **Step 4: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/db/client.test.ts`
 Expected: FAIL — `Cannot find module '../../src/db/client'`
 
-- [ ] **Step 5: Create `BE/src/db/client.ts`**
+- [x] **Step 5: Create `BE/src/db/client.ts`**
 
 ```typescript
 import { PrismaClient } from "@prisma/client";
@@ -269,12 +269,12 @@ import { PrismaClient } from "@prisma/client";
 export const prisma = new PrismaClient();
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/db/client.test.ts`
 Expected: PASS — requires a real reachable Postgres at `DATABASE_URL`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add BE/prisma/schema.prisma BE/src/db/client.ts BE/test/db/client.test.ts
@@ -296,7 +296,7 @@ git commit -m "feat: add Prisma schema and DB client"
 - Consumes: `prisma` from `BE/src/db/client.ts` (Task 2).
 - Produces: `CandidateProfile` interface, `loadCandidateProfileFromFile(): CandidateProfile`, `seedCandidateProfile(): Promise<void>`, `getCandidateProfile(): Promise<CandidateProfile>` — Task 8's scoring functions, Task 12 (analysis), and Task 13 (orchestrator) all consume `CandidateProfile`.
 
-- [ ] **Step 1: Install `js-yaml`**
+- [x] **Step 1: Install `js-yaml`**
 
 ```bash
 cd BE
@@ -304,7 +304,7 @@ npm install js-yaml
 npm install --save-dev @types/js-yaml
 ```
 
-- [ ] **Step 2: Create `BE/src/types/candidate.ts`**
+- [x] **Step 2: Create `BE/src/types/candidate.ts`**
 
 ```typescript
 export interface CandidateProfile {
@@ -343,7 +343,7 @@ export interface CandidateProfile {
 }
 ```
 
-- [ ] **Step 3: Create `BE/profile/candidate.yaml`**
+- [x] **Step 3: Create `BE/profile/candidate.yaml`**
 
 ```yaml
 name: Satyajeet Singh
@@ -432,7 +432,7 @@ preferences:
   productCompanyPreferred: true
 ```
 
-- [ ] **Step 4: Write the failing test for load + seed + retrieve**
+- [x] **Step 4: Write the failing test for load + seed + retrieve**
 
 ```typescript
 // BE/test/db/candidate-profile.test.ts
@@ -472,12 +472,12 @@ describe("candidate profile", () => {
 });
 ```
 
-- [ ] **Step 5: Run test to verify it fails**
+- [x] **Step 5: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/db/candidate-profile.test.ts`
 Expected: FAIL — `Cannot find module '../../src/db/candidate-profile'`
 
-- [ ] **Step 6: Create `BE/src/db/candidate-profile.ts`**
+- [x] **Step 6: Create `BE/src/db/candidate-profile.ts`**
 
 ```typescript
 import { readFileSync } from "node:fs";
@@ -519,12 +519,12 @@ export async function getCandidateProfile(): Promise<CandidateProfile> {
 }
 ```
 
-- [ ] **Step 7: Run test to verify it passes**
+- [x] **Step 7: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/db/candidate-profile.test.ts`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add BE/package.json BE/package-lock.json BE/profile/candidate.yaml BE/src/types/candidate.ts BE/src/db/candidate-profile.ts BE/test/db/candidate-profile.test.ts
@@ -546,7 +546,7 @@ Unchanged from the original plan — no scoring or candidate-profile dependency.
 **Interfaces:**
 - Produces: `SEARCH_CONFIG`, `JobSource`, `RawJob`, `JobSearchParams` types, `GreenhouseSource: JobSource` — Task 5 (normalize) consumes `RawJob`; Task 13 (orchestrator) consumes `GreenhouseSource` and `SEARCH_CONFIG`.
 
-- [ ] **Step 1: Create `BE/src/config/search-config.ts`**
+- [x] **Step 1: Create `BE/src/config/search-config.ts`**
 
 ```typescript
 export const SEARCH_CONFIG = {
@@ -573,7 +573,7 @@ export const SEARCH_CONFIG = {
 
 **Note for implementer:** the three example board tokens are placeholders for real companies known to use Greenhouse; verify each resolves (`curl https://boards-api.greenhouse.io/v1/boards/<token>/jobs`) before relying on it, and swap in tokens for companies actually relevant to the candidate's target roles/locations.
 
-- [ ] **Step 2: Create `BE/src/sources/types.ts`**
+- [x] **Step 2: Create `BE/src/sources/types.ts`**
 
 ```typescript
 export interface JobSearchParams {
@@ -600,7 +600,7 @@ export interface JobSource {
 }
 ```
 
-- [ ] **Step 3: Write the failing test for `GreenhouseSource`**
+- [x] **Step 3: Write the failing test for `GreenhouseSource`**
 
 ```typescript
 // BE/test/sources/greenhouse.test.ts
@@ -658,12 +658,12 @@ describe("GreenhouseSource", () => {
 });
 ```
 
-- [ ] **Step 4: Run test to verify it fails**
+- [x] **Step 4: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/sources/greenhouse.test.ts`
 Expected: FAIL — `Cannot find module '../../src/sources/greenhouse'`
 
-- [ ] **Step 5: Create `BE/src/sources/greenhouse/index.ts`**
+- [x] **Step 5: Create `BE/src/sources/greenhouse/index.ts`**
 
 ```typescript
 import type { JobSearchParams, JobSource, RawJob } from "../types";
@@ -723,12 +723,12 @@ export class GreenhouseSource implements JobSource {
 }
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/sources/greenhouse.test.ts`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add BE/src/config/search-config.ts BE/src/sources/types.ts BE/src/sources/greenhouse/index.ts BE/test/sources/greenhouse.test.ts
@@ -749,7 +749,7 @@ Unchanged from the original plan.
 - Consumes: `RawJob` (Task 4), `Job`/`JobStatus` (Task 1).
 - Produces: `normalizeGreenhouseJob(raw: RawJob): Job` — Task 13 (orchestrator) calls this for every raw job Greenhouse returns.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/sources/greenhouse-normalize.test.ts
@@ -802,12 +802,12 @@ describe("normalizeGreenhouseJob", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/sources/greenhouse-normalize.test.ts`
 Expected: FAIL — `Cannot find module '../../src/sources/greenhouse/normalize'`
 
-- [ ] **Step 3: Create `BE/src/sources/greenhouse/normalize.ts`**
+- [x] **Step 3: Create `BE/src/sources/greenhouse/normalize.ts`**
 
 ```typescript
 import type { RawJob } from "../types";
@@ -837,12 +837,12 @@ export function normalizeGreenhouseJob(raw: RawJob): Job {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/sources/greenhouse-normalize.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add BE/src/sources/greenhouse/normalize.ts BE/test/sources/greenhouse-normalize.test.ts
@@ -863,7 +863,7 @@ Unchanged from the original plan.
 - Consumes: `Job` (Task 1).
 - Produces: `dedupeKey(job: Job): string`, `filterNewJobs(jobs: Job[], existingKeys: Set<string>): Job[]` — Task 10 (`jobs.ts`) stores `dedupeKey`, Task 13 (orchestrator) calls `filterNewJobs`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/pipeline/dedupe.test.ts
@@ -922,12 +922,12 @@ describe("filterNewJobs", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/pipeline/dedupe.test.ts`
 Expected: FAIL — `Cannot find module '../../src/pipeline/dedupe'`
 
-- [ ] **Step 3: Create `BE/src/pipeline/dedupe.ts`**
+- [x] **Step 3: Create `BE/src/pipeline/dedupe.ts`**
 
 ```typescript
 import type { Job } from "../types/job";
@@ -949,12 +949,12 @@ export function filterNewJobs(jobs: Job[], existingKeys: Set<string>): Job[] {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/pipeline/dedupe.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add BE/src/pipeline/dedupe.ts BE/test/pipeline/dedupe.test.ts
@@ -975,7 +975,7 @@ Unchanged from the original plan — the "don't reject for one missing skill" nu
 - Consumes: `Job` (Task 1).
 - Produces: `passesHardFilters(job: Job): boolean` — Task 13 (orchestrator) calls this on every deduped job.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/pipeline/filters.test.ts
@@ -1030,12 +1030,12 @@ describe("passesHardFilters", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/pipeline/filters.test.ts`
 Expected: FAIL — `Cannot find module '../../src/pipeline/filters'`
 
-- [ ] **Step 3: Create `BE/src/pipeline/filters.ts`**
+- [x] **Step 3: Create `BE/src/pipeline/filters.ts`**
 
 ```typescript
 import type { Job } from "../types/job";
@@ -1091,12 +1091,12 @@ export function passesHardFilters(job: Job): boolean {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/pipeline/filters.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add BE/src/pipeline/filters.ts BE/test/pipeline/filters.test.ts
@@ -1117,7 +1117,7 @@ git commit -m "feat: add deterministic hard filters"
 - Consumes: `CandidateProfile` (Task 3), `Job` (Task 1).
 - Produces: `EligibilityFacts`, `JobAnalysisResult`, `CategoryScores`, `PriorityTier` types; `scoreSkillMatch`, `scoreExperienceMatch`, `scoreLocationMatch`, `scoreSeniorityMatch`, `scoreEducationMatch`, `scoreSalaryMatch`, `scoreDomainMatch`, `scoreJob`, `calculateOverallScore`, `categorize` functions — Task 10 (persistence) calls `scoreJob`, `calculateOverallScore`, `categorize` internally and returns the result; Task 13 (orchestrator) only consumes the `PriorityTier`/`JobAnalysisResult` types, not the scoring functions themselves. Task 12 (analysis) produces `JobAnalysisResult` values.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/pipeline/scoring.test.ts
@@ -1410,12 +1410,12 @@ describe("scoreJob + calculateOverallScore + categorize", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/pipeline/scoring.test.ts`
 Expected: FAIL — `Cannot find module '../../src/pipeline/scoring'`
 
-- [ ] **Step 3: Create `BE/src/pipeline/scoring.ts`**
+- [x] **Step 3: Create `BE/src/pipeline/scoring.ts`**
 
 ```typescript
 import type { CandidateProfile } from "../types/candidate";
@@ -1624,12 +1624,12 @@ export function categorize(score: number): PriorityTier {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/pipeline/scoring.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add BE/src/pipeline/scoring.ts BE/test/pipeline/scoring.test.ts
@@ -1650,7 +1650,7 @@ Unchanged from the original plan — this class is generic over `<T>` and any JS
 **Interfaces:**
 - Produces: `LLMProvider` interface, `OllamaProvider` implementing it — Task 12's fallback path (12B) uses `OllamaProvider`.
 
-- [ ] **Step 1: Create `BE/src/llm/provider.ts`**
+- [x] **Step 1: Create `BE/src/llm/provider.ts`**
 
 ```typescript
 export interface LLMProvider {
@@ -1658,7 +1658,7 @@ export interface LLMProvider {
 }
 ```
 
-- [ ] **Step 2: Write the failing test for `OllamaProvider`**
+- [x] **Step 2: Write the failing test for `OllamaProvider`**
 
 ```typescript
 // BE/test/llm/ollama-provider.test.ts
@@ -1710,12 +1710,12 @@ describe("OllamaProvider", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/llm/ollama-provider.test.ts`
 Expected: FAIL — `Cannot find module '../../src/llm/ollama-provider'`
 
-- [ ] **Step 4: Create `BE/src/llm/ollama-provider.ts`**
+- [x] **Step 4: Create `BE/src/llm/ollama-provider.ts`**
 
 ```typescript
 import type { LLMProvider } from "./provider";
@@ -1750,12 +1750,12 @@ export class OllamaProvider implements LLMProvider {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/llm/ollama-provider.test.ts`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add BE/src/llm/provider.ts BE/src/llm/ollama-provider.ts BE/test/llm/ollama-provider.test.ts
@@ -1780,7 +1780,7 @@ git commit -m "feat: add LLMProvider abstraction and OllamaProvider"
 - Consumes: `prisma` (Task 2), `Job` (Task 1), `CandidateProfile` (Task 3), `dedupeKey` (Task 6), `JobAnalysisResult`/`scoreJob`/`calculateOverallScore`/`categorize` (Task 8).
 - Produces: `getExistingDedupeKeys(): Promise<Set<string>>`, `saveNewJobs(jobs: Job[]): Promise<Map<string, string>>` (returns dedupeKey → DB id), `saveJobMatch(jobId: string, job: Job, candidate: CandidateProfile, analysis: JobAnalysisResult): Promise<{ overallScore: number; priority: PriorityTier }>` (returns what it computed so the orchestrator never recomputes it), `startAgentRun(runId: string): Promise<void>`, `completeAgentRun(runId: string, stats: AgentRunStats): Promise<void>` — Task 13 (orchestrator) calls all five.
 
-- [ ] **Step 1: Write the failing test for jobs persistence**
+- [x] **Step 1: Write the failing test for jobs persistence**
 
 ```typescript
 // BE/test/db/jobs.test.ts
@@ -1840,12 +1840,12 @@ describe("jobs persistence", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/db/jobs.test.ts`
 Expected: FAIL — `Cannot find module '../../src/db/jobs'`
 
-- [ ] **Step 3: Create `BE/src/db/jobs.ts`**
+- [x] **Step 3: Create `BE/src/db/jobs.ts`**
 
 ```typescript
 import { prisma } from "./client";
@@ -1892,12 +1892,12 @@ export async function saveNewJobs(jobs: Job[]): Promise<Map<string, string>> {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/db/jobs.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Write the failing test for job-match persistence**
+- [x] **Step 5: Write the failing test for job-match persistence**
 
 ```typescript
 // BE/test/db/job-matches.test.ts
@@ -2021,12 +2021,12 @@ describe("saveJobMatch", () => {
 });
 ```
 
-- [ ] **Step 6: Run test to verify it fails**
+- [x] **Step 6: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/db/job-matches.test.ts`
 Expected: FAIL — `Cannot find module '../../src/db/job-matches'`
 
-- [ ] **Step 7: Create `BE/src/db/job-matches.ts`**
+- [x] **Step 7: Create `BE/src/db/job-matches.ts`**
 
 ```typescript
 import { prisma } from "./client";
@@ -2103,12 +2103,12 @@ export async function saveJobMatch(
 }
 ```
 
-- [ ] **Step 8: Run test to verify it passes**
+- [x] **Step 8: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/db/job-matches.test.ts`
 Expected: PASS
 
-- [ ] **Step 9: Write the failing test for agent-run tracking**
+- [x] **Step 9: Write the failing test for agent-run tracking**
 
 ```typescript
 // BE/test/db/agent-runs.test.ts
@@ -2145,12 +2145,12 @@ describe("agent run tracking", () => {
 });
 ```
 
-- [ ] **Step 10: Run test to verify it fails**
+- [x] **Step 10: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/db/agent-runs.test.ts`
 Expected: FAIL — `Cannot find module '../../src/db/agent-runs'`
 
-- [ ] **Step 11: Create `BE/src/db/agent-runs.ts`**
+- [x] **Step 11: Create `BE/src/db/agent-runs.ts`**
 
 ```typescript
 import { prisma } from "./client";
@@ -2191,12 +2191,12 @@ export async function completeAgentRun(runId: string, stats: AgentRunStats): Pro
 }
 ```
 
-- [ ] **Step 12: Run test to verify it passes**
+- [x] **Step 12: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/db/agent-runs.test.ts`
 Expected: PASS
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add BE/src/db/jobs.ts BE/src/db/job-matches.ts BE/src/db/agent-runs.ts BE/test/db/jobs.test.ts BE/test/db/job-matches.test.ts BE/test/db/agent-runs.test.ts
@@ -2217,7 +2217,7 @@ git commit -m "feat: persist jobs, extended job matches, and agent run stats"
 
 This is a timeboxed investigation, not a feature — the spec (§2) flags OpenClaw's headless (no-channel, single-task, clean-exit) behavior as the one unverified assumption in this design. Do not spend more than ~1 hour on this before deciding PASS or FAIL and moving on.
 
-- [ ] **Step 1: Install OpenClaw in `BE/`**
+- [x] **Step 1: Install OpenClaw in `BE/`**
 
 ```bash
 cd BE
@@ -2225,7 +2225,7 @@ npm install openclaw
 npx openclaw --version
 ```
 
-- [ ] **Step 2: Inspect the CLI for a non-interactive, single-task run mode**
+- [x] **Step 2: Inspect the CLI for a non-interactive, single-task run mode**
 
 ```bash
 npx openclaw --help
@@ -2233,11 +2233,11 @@ npx openclaw --help
 
 Look specifically for: a subcommand that runs one task and exits (not a persistent chat/TUI session), flags for supplying a model provider (`--model` / config file), flags for scoping which tools are available to the session (an allowlist), and a flag or config option for machine-readable (JSON) output.
 
-- [ ] **Step 3: Configure OpenClaw to use the local Ollama model**
+- [x] **Step 3: Configure OpenClaw to use the local Ollama model**
 
 Follow `https://docs.openclaw.ai/concepts/model-providers` to register `ollama/llama3.1` as a provider (Ollama is auto-detected at `127.0.0.1:11434` per that doc). Confirm `ollama serve` is running and `ollama list` shows `llama3.1` before testing.
 
-- [ ] **Step 4: Attempt a headless invocation with a minimal, scoped test tool**
+- [x] **Step 4: Attempt a headless invocation with a minimal, scoped test tool**
 
 Register a single trivial tool (e.g. `echo_input` that returns whatever string it's given) via OpenClaw's plugin/tool SDK, restrict a session to only that tool, and invoke it non-interactively with a prompt that should trigger a tool call — for example `npx openclaw run --model ollama/llama3.1 --prompt "call echo_input with the text hello" --tools echo_input` (exact flags depend on Step 2's findings — adjust to whatever the real CLI/RPC surface turns out to be).
 
@@ -2245,7 +2245,7 @@ Success criteria (**PASS**): the process runs once, calls exactly the allowliste
 
 Failure criteria (**FAIL**): headless invocation isn't supported without a running Gateway/persistent session, tool scoping can't be constrained to an explicit allowlist, or getting a clean single-shot invocation working would take meaningfully more than the ~1 hour timebox.
 
-- [ ] **Step 5: Record the finding**
+- [x] **Step 5: Record the finding**
 
 ```markdown
 # OpenClaw Headless Spike — Findings
@@ -2267,7 +2267,7 @@ CLI/RPC surface that will matter when Phase B's plan is written>
 
 Save this to `docs/superpowers/plans/openclaw-spike-notes.md`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/superpowers/plans/openclaw-spike-notes.md BE/package.json BE/package-lock.json
@@ -2277,6 +2277,8 @@ git commit -m "docs: record OpenClaw headless invocation spike findings"
 ---
 
 ### Task 12: Wire the analysis step
+
+> **2026-10-14 update (found by Task 15):** the OpenClaw-based Task 12A implementation below was replaced. Real `openclaw agent` runs returned prose instead of JSON every time, so `analyzeJob` now calls `OllamaProvider.generateStructured` directly with a JSON-schema `format` (the plan's Task 12B fallback path). `OllamaProvider` also sends an explicit `num_ctx`, streams the request, and rejects truncated generations; failed analyses are saved unscored (spec §13). See the spec's 2026-10-14 revision note.
 
 **Full rewrite.** `analyzeJob` now returns a `JobAnalysisResult` (extracted facts + qualitative reasoning) instead of `MatchAnalysis` (which had numeric match percentages). No scoring happens here — that's entirely Task 8, called by Task 10/13.
 
@@ -2355,7 +2357,7 @@ Return ONLY valid JSON matching this shape:
 
 #### Branch 12A — implement only if Task 11's spike result is PASS
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/agent/analyze-job.test.ts
@@ -2435,12 +2437,12 @@ describe("analyzeJob (OpenClaw branch)", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/agent/analyze-job.test.ts`
 Expected: FAIL — `Cannot find module '../../src/agent/analyze-job'`
 
-- [ ] **Step 3: Create `BE/src/agent/openclaw-client.ts`**
+- [x] **Step 3: Create `BE/src/agent/openclaw-client.ts`**
 
 Task 11's spike (`docs/superpowers/plans/openclaw-spike-notes.md`) verified the invocation shape (`openclaw agent --local --message "<prompt>" --model <provider/model> --json --to <placeholder> --timeout <seconds>`, no Gateway daemon, clean exit) and that tool scoping is config-based (`openclaw config set tools.allow '[...]'`), not a per-invocation flag. It did **not** pin down, within its timebox, the exact JSON key path for the final assistant text reply on a pure-text (no-tool-call) response — the spike's own test used a tool-calling prompt and read the reply from the session transcript file, not from a documented `--json` field.
 
@@ -2509,7 +2511,7 @@ export async function runOpenClawSession(options: OpenClawSessionOptions): Promi
 }
 ```
 
-- [ ] **Step 4: Create `BE/src/agent/analyze-job.ts`**
+- [x] **Step 4: Create `BE/src/agent/analyze-job.ts`**
 
 ```typescript
 import { getCandidateProfile } from "../db/candidate-profile";
@@ -2639,12 +2641,12 @@ Description: ${job.description}
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/agent/analyze-job.test.ts`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add BE/src/agent/openclaw-client.ts BE/src/agent/analyze-job.ts BE/test/agent/analyze-job.test.ts
@@ -2653,7 +2655,7 @@ git commit -m "feat: wire job analysis (extraction + reasoning) through OpenClaw
 
 #### Branch 12B — implement only if Task 11's spike result is FAIL
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/agent/analyze-job.test.ts
@@ -2730,12 +2732,12 @@ describe("analyzeJob (Ollama fallback branch)", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/agent/analyze-job.test.ts`
 Expected: FAIL — `Cannot find module '../../src/agent/analyze-job'`
 
-- [ ] **Step 3: Create `BE/src/agent/analyze-job.ts`**
+- [x] **Step 3: Create `BE/src/agent/analyze-job.ts`**
 
 ```typescript
 import { getCandidateProfile } from "../db/candidate-profile";
@@ -2892,12 +2894,12 @@ Description: ${job.description}
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/agent/analyze-job.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add BE/src/agent/analyze-job.ts BE/test/agent/analyze-job.test.ts
@@ -2918,7 +2920,7 @@ git commit -m "feat: wire job analysis (extraction + reasoning) through direct O
 - Consumes: `GreenhouseSource` (Task 4), `normalizeGreenhouseJob` (Task 5), `filterNewJobs`/`dedupeKey` (Task 6), `passesHardFilters` (Task 7), `analyzeJob` (Task 12), `getCandidateProfile` (Task 3), `getExistingDedupeKeys`/`saveNewJobs`/`saveJobMatch` (now returning `{ overallScore, priority }`)/`startAgentRun`/`completeAgentRun` (Task 10), `PriorityTier`/`JobAnalysisResult` types (Task 8), `SEARCH_CONFIG` (Task 4).
 - Produces: `runPipeline(runId: string): Promise<PipelineResult>` — Task 14 (CLI) calls this and formats `PipelineResult` for display.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 // BE/test/pipeline/orchestrator.test.ts
@@ -3049,12 +3051,12 @@ describe("runPipeline", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/pipeline/orchestrator.test.ts`
 Expected: FAIL — `Cannot find module '../../src/pipeline/orchestrator'`
 
-- [ ] **Step 3: Create `BE/src/pipeline/orchestrator.ts`**
+- [x] **Step 3: Create `BE/src/pipeline/orchestrator.ts`**
 
 ```typescript
 import { GreenhouseSource } from "../sources/greenhouse";
@@ -3175,12 +3177,12 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/pipeline/orchestrator.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add BE/src/pipeline/orchestrator.ts BE/test/pipeline/orchestrator.test.ts
@@ -3201,7 +3203,7 @@ git commit -m "feat: wire the full pipeline orchestrator with deterministic scor
 - Consumes: `runPipeline` (Task 13), `seedCandidateProfile` (Task 3).
 - Produces: the `npm run agent:run` command (already wired to this file via Task 1's `package.json`).
 
-- [ ] **Step 1: Write the failing test for output formatting**
+- [x] **Step 1: Write the failing test for output formatting**
 
 ```typescript
 // BE/test/cli/agent-run.test.ts
@@ -3240,12 +3242,12 @@ describe("formatResultsForDisplay", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd BE && npm test -- test/cli/agent-run.test.ts`
 Expected: FAIL — `Cannot find module '../../src/cli/agent-run'`
 
-- [ ] **Step 3: Create `BE/src/cli/agent-run.ts`**
+- [x] **Step 3: Create `BE/src/cli/agent-run.ts`**
 
 ```typescript
 import { seedCandidateProfile } from "../db/candidate-profile";
@@ -3294,12 +3296,12 @@ if (require.main === module) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd BE && npm test -- test/cli/agent-run.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add BE/src/cli/agent-run.ts BE/test/cli/agent-run.test.ts
