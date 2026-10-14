@@ -48,6 +48,29 @@ export interface CategoryScores {
   domainMatch: number;
 }
 
+// Spelling variants of the *same* skill only — never related-but-different
+// skills (REST ≠ GraphQL, AWS ≠ Kubernetes), per the anti-hallucination rule.
+const SKILL_ALIASES: Record<string, string> = {
+  postgres: "postgresql",
+  js: "javascript",
+  ts: "typescript",
+  k8s: "kubernetes",
+  reactjs: "react",
+  expressjs: "express",
+  golang: "go",
+  mongo: "mongodb",
+};
+
+export function normalizeSkill(skill: string): string {
+  const compact = skill.toLowerCase().replace(/[\s._-]/g, "");
+  const canonical = SKILL_ALIASES[compact] ?? compact;
+  // Singularize ("REST APIs" = "REST API"); applied to both sides of every
+  // comparison, so it only has to be consistent, not linguistically correct.
+  return canonical.length > 3 && canonical.endsWith("s") && !canonical.endsWith("ss")
+    ? canonical.slice(0, -1)
+    : canonical;
+}
+
 function flattenCandidateSkills(candidate: CandidateProfile): Set<string> {
   const all = [
     ...candidate.skills.languages,
@@ -57,13 +80,62 @@ function flattenCandidateSkills(candidate: CandidateProfile): Set<string> {
     ...candidate.skills.cloudDevOps,
     ...candidate.skills.architecture,
   ];
-  return new Set(all.map((s) => s.toLowerCase()));
+  return new Set(all.map(normalizeSkill));
 }
 
 function matchRatio(required: string[], candidateSkills: Set<string>): number {
   if (required.length === 0) return 1;
-  const matched = required.filter((skill) => candidateSkills.has(skill.toLowerCase()));
+  const matched = required.filter((skill) => candidateSkills.has(normalizeSkill(skill)));
   return matched.length / required.length;
+}
+
+// The model's own strongestMatchingSkills/missingSkills are not trusted (a
+// real run had it credit the candidate with Python/Rails they don't have):
+// both lists are derived here from the extracted job skills and the profile.
+export function deriveSkillLists(
+  candidate: CandidateProfile,
+  facts: JobAnalysisResult,
+): { strongestMatchingSkills: string[]; missingSkills: string[] } {
+  const candidateSkills = flattenCandidateSkills(candidate);
+  const seen = new Set<string>();
+  const strongestMatchingSkills: string[] = [];
+  const missingSkills: string[] = [];
+  const requiredKeys = new Set(facts.requiredSkills.map(normalizeSkill));
+
+  for (const skill of [...facts.requiredSkills, ...facts.preferredSkills]) {
+    const key = normalizeSkill(skill);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (candidateSkills.has(key)) strongestMatchingSkills.push(skill);
+    else if (requiredKeys.has(key)) missingSkills.push(skill);
+  }
+  return { strongestMatchingSkills, missingSkills };
+}
+
+// Deterministic checks that flag model output contradicting the profile or
+// the computed score, surfaced as concerns rather than silently trusted.
+export function consistencyConcerns(
+  candidate: CandidateProfile,
+  facts: JobAnalysisResult,
+  priority: PriorityTier,
+): string[] {
+  const concerns: string[] = [];
+  const candidateSkills = flattenCandidateSkills(candidate);
+
+  const unsupported = facts.strongestMatchingSkills.filter(
+    (skill) => !candidateSkills.has(normalizeSkill(skill)),
+  );
+  if (unsupported.length > 0) {
+    concerns.push(
+      `Model claimed matching skills not in the candidate profile (${unsupported.join(", ")}) — its explanation may be unreliable`,
+    );
+  }
+
+  const recommendation = facts.applicationRecommendation;
+  if ((recommendation === "apply" || recommendation === "strong_apply") && priority === "P3") {
+    concerns.push(`Model recommended "${recommendation}" but the computed priority is P3`);
+  }
+  return concerns;
 }
 
 const REQUIRED_SKILL_WEIGHT = 22;

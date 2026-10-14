@@ -9,6 +9,9 @@ import {
   scoreJob,
   calculateOverallScore,
   categorize,
+  normalizeSkill,
+  deriveSkillLists,
+  consistencyConcerns,
 } from "../../src/pipeline/scoring";
 import type { CandidateProfile } from "../../src/types/candidate";
 import type { Job } from "../../src/types/job";
@@ -86,7 +89,10 @@ function makeFacts(overrides: Partial<JobAnalysisResult> = {}): JobAnalysisResul
 
 describe("scoreSkillMatch", () => {
   it("gives full points when all required and preferred skills are demonstrated", () => {
-    const facts = makeFacts({ requiredSkills: ["TypeScript", "Node.js"], preferredSkills: ["React"] });
+    const facts = makeFacts({
+      requiredSkills: ["TypeScript", "Node.js"],
+      preferredSkills: ["React"],
+    });
     expect(scoreSkillMatch(CANDIDATE, facts)).toBe(30);
   });
 
@@ -102,7 +108,10 @@ describe("scoreSkillMatch", () => {
 
   it("weights required and preferred skills separately on a partial match", () => {
     // 1 of 2 required (TypeScript matches, Rust doesn't), 0 of 1 preferred (Elixir doesn't).
-    const facts = makeFacts({ requiredSkills: ["TypeScript", "Rust"], preferredSkills: ["Elixir"] });
+    const facts = makeFacts({
+      requiredSkills: ["TypeScript", "Rust"],
+      preferredSkills: ["Elixir"],
+    });
     expect(scoreSkillMatch(CANDIDATE, facts)).toBe(Math.round(0.5 * 22 + 0 * 8));
     expect(scoreSkillMatch(CANDIDATE, facts)).toBe(11);
   });
@@ -191,7 +200,9 @@ describe("scoreLocationMatch", () => {
   });
 
   it("scores an onsite job against the candidate's preferred cities", () => {
-    const facts = makeFacts({ eligibility: { ...makeFacts().eligibility, remoteStatus: "onsite" } });
+    const facts = makeFacts({
+      eligibility: { ...makeFacts().eligibility, remoteStatus: "onsite" },
+    });
     const preferredCityJob = makeJob({ locations: ["Pune, India"] });
     const otherCityJob = makeJob({ locations: ["Berlin, Germany"] });
     expect(scoreLocationMatch(CANDIDATE, preferredCityJob, facts)).toBe(18);
@@ -217,7 +228,9 @@ describe("scoreEducationMatch", () => {
   });
 
   it("gives full points when the requirement matches the candidate's degree", () => {
-    expect(scoreEducationMatch(makeFacts({ educationRequirement: "Bachelor's degree in CS" }))).toBe(5);
+    expect(
+      scoreEducationMatch(makeFacts({ educationRequirement: "Bachelor's degree in CS" })),
+    ).toBe(5);
   });
 
   it("gives a small nonzero score for an unrecognized requirement", () => {
@@ -278,5 +291,74 @@ describe("scoreJob + calculateOverallScore + categorize", () => {
     [40, "P3"],
   ])("categorizes %d as %s", (score, expected) => {
     expect(categorize(score)).toBe(expected);
+  });
+});
+
+describe("normalizeSkill", () => {
+  it("treats spellings of the same skill as equal", () => {
+    expect(normalizeSkill("Node.js")).toBe(normalizeSkill("NodeJS"));
+    expect(normalizeSkill("REST APIs")).toBe(normalizeSkill("REST API"));
+    expect(normalizeSkill("Postgres")).toBe(normalizeSkill("PostgreSQL"));
+    expect(normalizeSkill("  typescript ")).toBe(normalizeSkill("TypeScript"));
+  });
+
+  it("never equates merely related skills (anti-hallucination rule)", () => {
+    expect(normalizeSkill("REST APIs")).not.toBe(normalizeSkill("GraphQL"));
+    expect(normalizeSkill("AWS EC2")).not.toBe(normalizeSkill("Kubernetes"));
+    expect(normalizeSkill("JavaScript")).not.toBe(normalizeSkill("Java"));
+  });
+});
+
+describe("deriveSkillLists", () => {
+  it("computes matching and missing skills from the profile, ignoring the model's lists", () => {
+    const facts = makeFacts({
+      requiredSkills: ["NodeJS", "Python", "Postgres"],
+      preferredSkills: ["React", "Ruby on Rails"],
+      strongestMatchingSkills: ["Python", "Ruby on Rails"], // model hallucination
+      missingSkills: [],
+    });
+
+    expect(deriveSkillLists(CANDIDATE, facts)).toEqual({
+      strongestMatchingSkills: ["NodeJS", "Postgres", "React"],
+      missingSkills: ["Python"],
+    });
+  });
+
+  it("dedupes skills listed as both required and preferred", () => {
+    const facts = makeFacts({ requiredSkills: ["React"], preferredSkills: ["react"] });
+    expect(deriveSkillLists(CANDIDATE, facts).strongestMatchingSkills).toEqual(["React"]);
+  });
+});
+
+describe("consistencyConcerns", () => {
+  it("flags a model that credits the candidate with matching skills not in their profile", () => {
+    // Real run: the model claimed Python/Rails as the candidate's strongest
+    // matches (and said so in whyMatches) though the profile has neither.
+    const facts = makeFacts({
+      requiredSkills: ["Python", "Ruby on Rails", "Node.js"],
+      strongestMatchingSkills: ["Python", "Ruby on Rails", "NodeJS"],
+      whyMatches: "Matches the candidate's experience with Python, Ruby on Rails and Node.js.",
+    });
+
+    expect(consistencyConcerns(CANDIDATE, facts, "P2")).toEqual([
+      "Model claimed matching skills not in the candidate profile (Python, Ruby on Rails) — its explanation may be unreliable",
+    ]);
+  });
+
+  it("flags an apply recommendation that contradicts a P3 computed priority", () => {
+    const facts = makeFacts({ applicationRecommendation: "apply", whyMatches: "" });
+    expect(consistencyConcerns(CANDIDATE, facts, "P3")).toEqual([
+      'Model recommended "apply" but the computed priority is P3',
+    ]);
+  });
+
+  it("returns nothing when the explanation and recommendation agree with the profile and score", () => {
+    const facts = makeFacts({
+      requiredSkills: ["Node.js", "Python"],
+      strongestMatchingSkills: ["Node.js"],
+      whyMatches: "Strong Node.js alignment; Python is a gap.",
+      applicationRecommendation: "consider",
+    });
+    expect(consistencyConcerns(CANDIDATE, facts, "P3")).toEqual([]);
   });
 });
