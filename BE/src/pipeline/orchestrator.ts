@@ -5,9 +5,9 @@ import { passesHardFilters } from "./filters";
 import { analyzeJob } from "../agent/analyze-job";
 import type { PriorityTier, JobAnalysisResult } from "./scoring";
 import { getCandidateProfile } from "../db/candidate-profile";
-import { getExistingDedupeKeys, saveNewJobs } from "../db/jobs";
+import { getExistingDedupeKeys, saveNewJobs, getJobsPendingAnalysis } from "../db/jobs";
 import { saveJobMatch } from "../db/job-matches";
-import { startAgentRun, completeAgentRun } from "../db/agent-runs";
+import { startAgentRun, completeAgentRun, failAgentRun } from "../db/agent-runs";
 import { SEARCH_CONFIG } from "../config/search-config";
 import type { Job } from "../types/job";
 
@@ -28,6 +28,7 @@ export interface PipelineResult {
   jobsFiltered: number;
   jobsAnalyzed: number;
   jobsNeedingReview: number;
+  jobsRetried: number;
   matches: RankedMatch[];
 }
 
@@ -46,7 +47,23 @@ function summarizeEligibility(analysis: JobAnalysisResult): string {
 
 export async function runPipeline(runId: string): Promise<PipelineResult> {
   await startAgentRun(runId);
+  try {
+    return await executeRun(runId);
+  } catch (err) {
+    // Close the run as failed rather than leaving it "in_progress" forever;
+    // never let a secondary DB error here mask the original failure.
+    await failAgentRun(runId, (err as Error).message).catch((failErr) =>
+      console.error(`runPipeline: could not mark run ${runId} failed:`, failErr),
+    );
+    throw err;
+  }
+}
 
+// After this many failed analyses a job stops being retried and stays
+// visible as "needs review" for a human to look at.
+export const MAX_ANALYSIS_ATTEMPTS = 3;
+
+async function executeRun(runId: string): Promise<PipelineResult> {
   const candidate = await getCandidateProfile();
 
   const source = new GreenhouseSource([...SEARCH_CONFIG.greenhouseBoardTokens]);
@@ -76,12 +93,22 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
 
   const savedIds = await saveNewJobs(jobsToPersist);
 
-  const matches: RankedMatch[] = [];
-  let jobsNeedingReview = 0;
+  const toAnalyze: { jobId: string; job: Job }[] = [];
   for (const job of survivors) {
     const jobId = savedIds.get(dedupeKey(job));
-    if (!jobId) continue;
+    if (jobId) toAnalyze.push({ jobId, job });
+  }
+  // Earlier runs' jobs still awaiting a successful analysis (failed attempts,
+  // or a crashed/interrupted run that never reached them).
+  const justSaved = new Set(toAnalyze.map((entry) => entry.jobId));
+  const retries = (await getJobsPendingAnalysis(MAX_ANALYSIS_ATTEMPTS)).filter(
+    (pending) => !justSaved.has(pending.jobId),
+  );
+  toAnalyze.push(...retries);
 
+  const matches: RankedMatch[] = [];
+  let jobsNeedingReview = 0;
+  for (const { jobId, job } of toAnalyze) {
     try {
       const analysis = await analyzeJob(job);
       const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
@@ -116,8 +143,9 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
     jobsFound: rawJobs.length,
     jobsNew: newJobs.length,
     jobsFiltered,
-    jobsAnalyzed: survivors.length,
+    jobsAnalyzed: toAnalyze.length,
     jobsNeedingReview,
+    jobsRetried: retries.length,
     matches,
   };
 

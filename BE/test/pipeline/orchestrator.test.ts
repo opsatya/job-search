@@ -1,4 +1,4 @@
-import { runPipeline } from "../../src/pipeline/orchestrator";
+import { runPipeline, MAX_ANALYSIS_ATTEMPTS } from "../../src/pipeline/orchestrator";
 import * as greenhouseModule from "../../src/sources/greenhouse";
 import * as analyzeModule from "../../src/agent/analyze-job";
 import * as candidateProfileModule from "../../src/db/candidate-profile";
@@ -50,12 +50,14 @@ describe("runPipeline", () => {
     jest.spyOn(greenhouseModule.GreenhouseSource.prototype, "search").mockResolvedValue([RAW_JOB]);
     jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue(CANDIDATE);
     jest.spyOn(jobsDb, "getExistingDedupeKeys").mockResolvedValue(new Set());
+    jest.spyOn(jobsDb, "getJobsPendingAnalysis").mockResolvedValue([]);
     jest.spyOn(jobsDb, "saveNewJobs").mockResolvedValue(new Map([["id:greenhouse:1", "db-id-1"]]));
     jest
       .spyOn(jobMatchesDb, "saveJobMatch")
       .mockResolvedValue({ overallScore: 95, priority: "P0" });
     jest.spyOn(agentRunsDb, "startAgentRun").mockResolvedValue();
     jest.spyOn(agentRunsDb, "completeAgentRun").mockResolvedValue();
+    jest.spyOn(agentRunsDb, "failAgentRun").mockResolvedValue();
     jest.spyOn(analyzeModule, "analyzeJob").mockResolvedValue({
       requiredSkills: ["Node.js"],
       preferredSkills: ["TypeScript"],
@@ -111,6 +113,70 @@ describe("runPipeline", () => {
     expect(result.jobsAnalyzed).toBe(1);
     expect(result.jobsNeedingReview).toBe(1);
     expect(result.matches).toHaveLength(0);
+  });
+
+  it("marks the run failed and rethrows when a stage throws, instead of leaving it in_progress", async () => {
+    jest
+      .spyOn(greenhouseModule.GreenhouseSource.prototype, "search")
+      .mockRejectedValue(new Error("network down"));
+
+    await expect(runPipeline("test-run-crash")).rejects.toThrow("network down");
+
+    expect(agentRunsDb.failAgentRun).toHaveBeenCalledWith("test-run-crash", "network down");
+    expect(agentRunsDb.completeAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("retries jobs from earlier runs that are still awaiting analysis", async () => {
+    jest.spyOn(jobsDb, "getExistingDedupeKeys").mockResolvedValue(new Set(["id:greenhouse:1"]));
+    jest.spyOn(jobsDb, "getJobsPendingAnalysis").mockResolvedValue([
+      {
+        jobId: "db-id-old",
+        job: {
+          id: "db-id-old",
+          source: "greenhouse",
+          sourceJobId: "1",
+          company: "acme",
+          title: "Software Engineer",
+          description: "Build Node.js APIs.",
+          url: RAW_JOB.url,
+          locations: ["Remote - India"],
+          discoveredAt: new Date(),
+          status: "new",
+        },
+      },
+    ]);
+
+    const result = await runPipeline("test-run-retry");
+
+    expect(jobsDb.getJobsPendingAnalysis).toHaveBeenCalledWith(MAX_ANALYSIS_ATTEMPTS);
+    expect(result.jobsNew).toBe(0);
+    expect(result.jobsRetried).toBe(1);
+    expect(result.jobsAnalyzed).toBe(1);
+    expect(jobMatchesDb.saveJobMatch).toHaveBeenCalledWith(
+      "db-id-old",
+      expect.objectContaining({ title: "Software Engineer" }),
+      CANDIDATE,
+      expect.anything(),
+    );
+    expect(result.matches).toHaveLength(1);
+  });
+
+  it("does not analyze a just-saved job twice when it also shows up as pending", async () => {
+    jest.spyOn(jobsDb, "getJobsPendingAnalysis").mockResolvedValue([
+      {
+        jobId: "db-id-1",
+        job: {
+          ...(await import("../../src/sources/greenhouse/normalize")).normalizeGreenhouseJob(
+            RAW_JOB,
+          ),
+        },
+      },
+    ]);
+
+    const result = await runPipeline("test-run-no-double");
+
+    expect(analyzeModule.analyzeJob).toHaveBeenCalledTimes(1);
+    expect(result.jobsRetried).toBe(0);
   });
 
   it("skips already-seen jobs on a second run", async () => {

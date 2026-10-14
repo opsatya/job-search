@@ -39,6 +39,9 @@ model Job {
   discoveredAt   DateTime  @default(now())
   status         String    @default("new")
   matchScore     Float?
+  // Analyses tried so far; jobs still "new" below the limit are retried by
+  // later runs (spec §13), so a failed or crash-interrupted analysis isn't lost.
+  analysisAttempts Int     @default(0)
 
   matches JobMatch[]
 
@@ -107,6 +110,7 @@ model AgentRun {
   strongMatches  Int
   startedAt      DateTime  @default(now())
   completedAt    DateTime?
+  error          String?   // set when status is "failed"
 
   @@map("agent_runs")
 }

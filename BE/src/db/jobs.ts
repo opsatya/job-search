@@ -40,3 +40,40 @@ export async function saveNewJobs(jobs: Job[]): Promise<Map<string, string>> {
 
   return idsByDedupeKey;
 }
+
+// Jobs that survived filtering but have no successful analysis yet — failed
+// analyses and jobs a crashed run never reached — for later runs to retry.
+export async function getJobsPendingAnalysis(
+  maxAttempts: number,
+): Promise<{ jobId: string; job: Job }[]> {
+  const rows = await prisma.job.findMany({
+    where: { status: "new", analysisAttempts: { lt: maxAttempts } },
+    orderBy: { discoveredAt: "asc" },
+  });
+  return rows.map((row) => ({
+    jobId: row.id,
+    job: {
+      id: row.id,
+      source: row.source,
+      sourceJobId: row.sourceJobId ?? undefined,
+      company: row.company,
+      title: row.title,
+      description: row.description,
+      url: row.url,
+      companyUrl: row.companyUrl ?? undefined,
+      locations: row.locations,
+      remote: row.remote ?? undefined,
+      employmentType: row.employmentType ?? undefined,
+      experienceMin: row.experienceMin ?? undefined,
+      experienceMax: row.experienceMax ?? undefined,
+      salaryMin: row.salaryMin ?? undefined,
+      salaryMax: row.salaryMax ?? undefined,
+      salaryCurrency: row.salaryCurrency ?? undefined,
+      technologies: row.technologies,
+      postedAt: row.postedAt ?? undefined,
+      discoveredAt: row.discoveredAt,
+      status: "new",
+      matchScore: row.matchScore ?? undefined,
+    },
+  }));
+}

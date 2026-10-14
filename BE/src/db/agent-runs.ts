@@ -34,3 +34,11 @@ export async function completeAgentRun(runId: string, stats: AgentRunStats): Pro
     },
   });
 }
+
+// Without this, any crash or interrupt left the run "in_progress" forever.
+export async function failAgentRun(runId: string, error: string): Promise<void> {
+  await prisma.agentRun.update({
+    where: { runId },
+    data: { status: "failed", completedAt: new Date(), error },
+  });
+}

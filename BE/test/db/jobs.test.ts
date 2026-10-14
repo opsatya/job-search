@@ -1,5 +1,5 @@
 import { prisma } from "../../src/db/client";
-import { getExistingDedupeKeys, saveNewJobs } from "../../src/db/jobs";
+import { getExistingDedupeKeys, saveNewJobs, getJobsPendingAnalysis } from "../../src/db/jobs";
 import type { Job } from "../../src/types/job";
 
 function makeJob(sourceJobId: string): Job {
@@ -61,5 +61,28 @@ describe("jobs persistence", () => {
     await saveNewJobs(jobs);
     const count = await prisma.job.count({ where: { dedupeKey: { in: TEST_DEDUPE_KEYS } } });
     expect(count).toBe(2);
+  });
+
+  it("returns jobs still awaiting analysis under the attempt limit, with their DB ids", async () => {
+    const ids = await saveNewJobs([makeJob("1"), makeJob("2")]);
+    const [id1, id2] = [ids.get("id:greenhouse:1")!, ids.get("id:greenhouse:2")!];
+    await prisma.job.update({ where: { id: id2 }, data: { analysisAttempts: 3 } });
+
+    // Scoped to this file's fixtures: the shared DB may hold real pending jobs.
+    const pending = (await getJobsPendingAnalysis(3)).filter((p) => [id1, id2].includes(p.jobId));
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0].jobId).toBe(id1);
+    expect(pending[0].job.sourceJobId).toBe("1");
+    expect(pending[0].job.title).toBe("Software Engineer");
+  });
+
+  it("does not return jobs that are already reviewed", async () => {
+    const ids = await saveNewJobs([makeJob("1")]);
+    const id1 = ids.get("id:greenhouse:1")!;
+    await prisma.job.update({ where: { id: id1 }, data: { status: "reviewed" } });
+
+    const pending = await getJobsPendingAnalysis(3);
+    expect(pending.some((p) => p.jobId === id1)).toBe(false);
   });
 });

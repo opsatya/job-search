@@ -1,5 +1,11 @@
 import { prisma } from "./client";
-import { scoreJob, calculateOverallScore, categorize } from "../pipeline/scoring";
+import {
+  scoreJob,
+  calculateOverallScore,
+  categorize,
+  deriveSkillLists,
+  consistencyConcerns,
+} from "../pipeline/scoring";
 import type { JobAnalysisResult, Tri, PriorityTier } from "../pipeline/scoring";
 import type { CandidateProfile } from "../types/candidate";
 import type { Job } from "../types/job";
@@ -18,15 +24,28 @@ export async function saveJobMatch(
     // Spec §13: a failed analysis carries no real facts, so scoring it would
     // invent a ranking. Persist what we have, unscored, and leave the job
     // "new" so it stays visibly awaiting review.
-    await prisma.jobMatch.create({ data: { jobId, ...analysisColumns(analysis) } });
+    // A retry replaces the previous attempt's row rather than piling up rows.
+    await prisma.$transaction([
+      prisma.jobMatch.deleteMany({ where: { jobId } }),
+      prisma.jobMatch.create({ data: { jobId, ...analysisColumns(analysis) } }),
+      prisma.job.update({ where: { id: jobId }, data: { analysisAttempts: { increment: 1 } } }),
+    ]);
     return { overallScore: null, priority: null };
   }
 
   const scores = scoreJob(candidate, job, analysis);
   const overallScore = calculateOverallScore(scores);
   const priority = categorize(overallScore);
+  // Skill lists come from code, not the model; contradictions between the
+  // model's output and the profile/score are surfaced as concerns.
+  const reconciled: JobAnalysisResult = {
+    ...analysis,
+    ...deriveSkillLists(candidate, analysis),
+    concerns: [...analysis.concerns, ...consistencyConcerns(candidate, analysis, priority)],
+  };
 
   await prisma.$transaction([
+    prisma.jobMatch.deleteMany({ where: { jobId } }),
     prisma.jobMatch.create({
       data: {
         jobId,
@@ -39,12 +58,16 @@ export async function saveJobMatch(
         domainMatch: scores.domainMatch,
         overallScore,
         priority,
-        ...analysisColumns(analysis),
+        ...analysisColumns(reconciled),
       },
     }),
     prisma.job.update({
       where: { id: jobId },
-      data: { matchScore: overallScore, status: "reviewed" },
+      data: {
+        matchScore: overallScore,
+        status: "reviewed",
+        analysisAttempts: { increment: 1 },
+      },
     }),
   ]);
 

@@ -1,5 +1,5 @@
 import { prisma } from "../../src/db/client";
-import { startAgentRun, completeAgentRun } from "../../src/db/agent-runs";
+import { startAgentRun, completeAgentRun, failAgentRun } from "../../src/db/agent-runs";
 
 // Scoped to this file's own fixture runId rather than wiping the whole
 // table — see the comment in test/db/jobs.test.ts for why an unscoped
@@ -35,6 +35,17 @@ describe("agent run tracking", () => {
     run = await prisma.agentRun.findUnique({ where: { runId: "run-1" } });
     expect(run?.status).toBe("completed");
     expect(run?.jobsFound).toBe(10);
+    expect(run?.completedAt).not.toBeNull();
+  });
+
+  it("marks a run failed with the error that ended it", async () => {
+    await startAgentRun(TEST_RUN_ID);
+
+    await failAgentRun(TEST_RUN_ID, "Greenhouse fetch failed: ECONNRESET");
+
+    const run = await prisma.agentRun.findUnique({ where: { runId: TEST_RUN_ID } });
+    expect(run?.status).toBe("failed");
+    expect(run?.error).toBe("Greenhouse fetch failed: ECONNRESET");
     expect(run?.completedAt).not.toBeNull();
   });
 });

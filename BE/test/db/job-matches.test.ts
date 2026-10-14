@@ -140,6 +140,44 @@ describe("saveJobMatch", () => {
     expect(job?.status).toBe("new");
   });
 
+  it("stores code-derived skill lists and flags model claims the profile doesn't support", async () => {
+    const ids = await saveNewJobs([makeJob()]);
+    const jobId = [...ids.values()][0];
+    const hallucinated: JobAnalysisResult = {
+      ...ANALYSIS,
+      requiredSkills: ["Python", "Node.js"],
+      strongestMatchingSkills: ["Python", "Node.js"],
+      missingSkills: [],
+      concerns: ["Small team"],
+    };
+
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, hallucinated);
+
+    const match = await prisma.jobMatch.findFirst({ where: { jobId } });
+    expect(match?.strongestMatchingSkills).toEqual(["Node.js", "React"]);
+    expect(match?.missingSkills).toEqual(["Python"]);
+    expect(match?.concerns).toEqual([
+      "Small team",
+      "Model claimed matching skills not in the candidate profile (Python) — its explanation may be unreliable",
+    ]);
+  });
+
+  it("replaces an earlier failed attempt's match on retry and counts every attempt", async () => {
+    const ids = await saveNewJobs([makeJob()]);
+    const jobId = [...ids.values()][0];
+    const failed: JobAnalysisResult = { ...ANALYSIS, analysisError: "timeout" };
+
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, failed);
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, ANALYSIS);
+
+    const matches = await prisma.jobMatch.findMany({ where: { jobId } });
+    expect(matches).toHaveLength(1);
+    expect(matches[0].overallScore).not.toBeNull();
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    expect(job?.analysisAttempts).toBe(2);
+    expect(job?.status).toBe("reviewed");
+  });
+
   it("stores UNKNOWN eligibility as null, not true or false", async () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
