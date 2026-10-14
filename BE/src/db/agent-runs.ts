@@ -42,3 +42,18 @@ export async function failAgentRun(runId: string, error: string): Promise<void> 
     data: { status: "failed", completedAt: new Date(), error },
   });
 }
+
+// A SIGKILL'd (or OOM-killed) process can't run any cleanup, so each new run
+// closes out whatever earlier runs were left "in_progress". Assumes
+// agent:run is single-instance, which holds for this personal CLI.
+export async function failAbandonedRuns(currentRunId: string): Promise<number> {
+  const { count } = await prisma.agentRun.updateMany({
+    where: { status: "in_progress", runId: { not: currentRunId } },
+    data: {
+      status: "failed",
+      completedAt: new Date(),
+      error: "abandoned: process ended without completing (killed or crashed)",
+    },
+  });
+  return count;
+}

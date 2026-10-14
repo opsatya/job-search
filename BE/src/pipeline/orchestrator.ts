@@ -7,7 +7,7 @@ import type { PriorityTier, JobAnalysisResult } from "./scoring";
 import { getCandidateProfile } from "../db/candidate-profile";
 import { getExistingDedupeKeys, saveNewJobs, getJobsPendingAnalysis } from "../db/jobs";
 import { saveJobMatch } from "../db/job-matches";
-import { startAgentRun, completeAgentRun, failAgentRun } from "../db/agent-runs";
+import { startAgentRun, completeAgentRun, failAgentRun, failAbandonedRuns } from "../db/agent-runs";
 import { SEARCH_CONFIG } from "../config/search-config";
 import type { Job } from "../types/job";
 
@@ -48,6 +48,8 @@ function summarizeEligibility(analysis: JobAnalysisResult): string {
 export async function runPipeline(runId: string): Promise<PipelineResult> {
   await startAgentRun(runId);
   try {
+    const abandoned = await failAbandonedRuns(runId);
+    if (abandoned > 0) console.warn(`runPipeline: marked ${abandoned} abandoned run(s) as failed`);
     return await executeRun(runId);
   } catch (err) {
     // Close the run as failed rather than leaving it "in_progress" forever;

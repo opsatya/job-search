@@ -58,6 +58,7 @@ describe("runPipeline", () => {
     jest.spyOn(agentRunsDb, "startAgentRun").mockResolvedValue();
     jest.spyOn(agentRunsDb, "completeAgentRun").mockResolvedValue();
     jest.spyOn(agentRunsDb, "failAgentRun").mockResolvedValue();
+    jest.spyOn(agentRunsDb, "failAbandonedRuns").mockResolvedValue(0);
     jest.spyOn(analyzeModule, "analyzeJob").mockResolvedValue({
       requiredSkills: ["Node.js"],
       preferredSkills: ["TypeScript"],
@@ -97,6 +98,7 @@ describe("runPipeline", () => {
     expect(result.matches[0].remoteEligibility).toBe("India-eligible");
 
     expect(agentRunsDb.startAgentRun).toHaveBeenCalledWith("test-run-1");
+    expect(agentRunsDb.failAbandonedRuns).toHaveBeenCalledWith("test-run-1");
     expect(agentRunsDb.completeAgentRun).toHaveBeenCalledWith(
       "test-run-1",
       expect.objectContaining({ jobsFound: 1, jobsNew: 1 }),

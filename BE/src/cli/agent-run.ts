@@ -41,6 +41,7 @@ async function main(): Promise<void> {
   for (const [signal, exitCode] of [
     ["SIGINT", 130],
     ["SIGTERM", 143],
+    ["SIGHUP", 129], // terminal/session closed
   ] as const) {
     process.once(signal, () => {
       void markRunInterrupted(runId, signal).finally(() => process.exit(exitCode));
