@@ -12,7 +12,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "agent:run": "tsx src/cli/agent-run.ts"
+    "agent:run": "tsx src/cli/agent-run.ts",
+    "test:db:migrate": "tsx scripts/migrate-test-db.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",
