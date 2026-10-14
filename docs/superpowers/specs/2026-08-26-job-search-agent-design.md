@@ -239,6 +239,8 @@ Explicitly not built this phase: automatic applications, LinkedIn/Naukri automat
 
 None of this changes Phase A/B's design — it changes what happens after Milestone 1 ships and is verified.
 
+**2026-10-14 update:** company discovery/tracking and additional sources (Lever, Ashby, and the Himalayas/RemoteOK/Remotive feeds) are now in scope — see `docs/superpowers/specs/2026-10-14-company-discovery-design.md`, which also makes the analysis step extraction-only. Excel export, contact discovery, `verification_status`, and the 3-bucket strategy remain deferred.
+
 ## 11. Repository Structure
 
 Two sibling packages, not a formal Turborepo/pnpm-workspace monorepo (no shared build tooling needed yet — that would be premature structure for two independently-runnable things):
