@@ -30,6 +30,25 @@ describe("normalizeGreenhouseJob", () => {
     expect(job.discoveredAt).toEqual(expect.any(Date));
   });
 
+  it("decodes Greenhouse's entity-encoded HTML before stripping tags", () => {
+    // Greenhouse's boards API returns `content` as entity-encoded HTML, so a
+    // plain tag-stripping regex never matches and the markup reaches the LLM
+    // prompt as entity soup (roughly doubling its token count).
+    const raw: RawJob = {
+      source: "greenhouse",
+      sourceJobId: "777",
+      title: "Software Engineer",
+      company: "acme",
+      url: "https://boards.greenhouse.io/acme/jobs/777",
+      locationText: "Remote",
+      description:
+        "&lt;div class=&quot;intro&quot;&gt;&lt;p&gt;You&#39;re building R&amp;amp;D tools&amp;nbsp;&amp;mdash; with Node.js.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;TypeScript&lt;/li&gt;&lt;li&gt;React&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;",
+    };
+
+    const job = normalizeGreenhouseJob(raw);
+    expect(job.description).toBe("You're building R&D tools — with Node.js.\nTypeScript\nReact");
+  });
+
   it("does not mark a job remote when the location has no remote indicator", () => {
     const raw: RawJob = {
       source: "greenhouse",
