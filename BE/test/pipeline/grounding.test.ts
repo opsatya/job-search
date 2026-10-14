@@ -177,5 +177,16 @@ describe("groundAnalysis", () => {
       );
       expect(result.ok && result.analysis.concerns).toEqual([]);
     });
+
+    it("does not throw when the model omits eligibilityEvidence, and downgrades a true claim", () => {
+      const base = analysis({});
+      const eligibility = {
+        ...base.eligibility,
+        indiaEligible: true,
+        eligibilityEvidence: undefined,
+      } as unknown as JobAnalysisResult["eligibility"];
+      const result = groundAnalysis(JOB, { ...base, eligibility });
+      expect(result.ok && result.analysis.eligibility.indiaEligible).toBe("UNKNOWN");
+    });
   });
 });

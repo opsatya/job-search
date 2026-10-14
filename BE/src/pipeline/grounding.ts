@@ -37,9 +37,9 @@ function groundEligibility(
   eligibility: JobFacts["eligibility"],
 ): { eligibility: JobFacts["eligibility"]; downgraded: string[] } {
   const postingText = compact(`${job.title}\n${job.locations.join("\n")}\n${job.description}`);
-  const evidenceIsQuote =
-    eligibility.eligibilityEvidence.trim().length > 0 &&
-    postingText.includes(compact(eligibility.eligibilityEvidence));
+  // The model output is not runtime-validated; a missing field must not throw.
+  const evidence = eligibility.eligibilityEvidence ?? "";
+  const evidenceIsQuote = evidence.trim().length > 0 && postingText.includes(compact(evidence));
   if (
     !evidenceIsQuote &&
     (eligibility.indiaEligible === true || eligibility.worldwideRemote === true)
@@ -54,7 +54,7 @@ function groundEligibility(
       downgraded: ["evidence-not-quoted"],
     };
   }
-  const support = `${eligibility.eligibilityEvidence}\n${job.locations.join("\n")}`;
+  const support = `${evidence}\n${job.locations.join("\n")}`;
   const grounded = { ...eligibility };
   const downgraded: string[] = [];
   if (grounded.indiaEligible === true && !INDIA_TERMS.test(support)) {
