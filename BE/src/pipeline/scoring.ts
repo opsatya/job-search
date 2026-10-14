@@ -75,7 +75,12 @@ export function scoreSkillMatch(candidate: CandidateProfile, facts: JobAnalysisR
 const EXPERIENCE_GAP_YEARS_FOR_ZERO = 2;
 
 export function scoreExperienceMatch(candidate: CandidateProfile, facts: JobAnalysisResult): number {
-  const min = facts.experienceRequirementYears.min;
+  // Real LLM output is only ever `JSON.parse`'d and cast to JobAnalysisResult
+  // (no runtime schema validation yet — see task-12-report.md), so a real
+  // model response can still omit experienceRequirementYears entirely even
+  // when the request schema marks it required. Guard defensively rather than
+  // crash the whole job's scoring (found via Task 15's real end-to-end run).
+  const min = facts.experienceRequirementYears?.min;
   if (min === undefined) return 20;
   const candidateYears = candidate.experience.months / 12;
   const gap = Math.max(0, min - candidateYears);

@@ -62,7 +62,18 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
   const survivors = newJobs.filter(passesHardFilters);
   const jobsFiltered = newJobs.length - survivors.length;
 
-  const savedIds = await saveNewJobs(survivors);
+  // Persist every newly-discovered job — not just the ones that survive hard
+  // filters — so their dedupeKey is recorded. Otherwise a job that fails hard
+  // filters today is never saved, `getExistingDedupeKeys()` never learns about
+  // it, and it gets rediscovered as "new" (and re-filtered) on every future
+  // run forever. Filtered-out jobs are saved with status "rejected" so they
+  // stay distinguishable from jobs still awaiting review.
+  const survivorKeys = new Set(survivors.map(dedupeKey));
+  const jobsToPersist = newJobs.map((job) =>
+    survivorKeys.has(dedupeKey(job)) ? job : { ...job, status: "rejected" as const },
+  );
+
+  const savedIds = await saveNewJobs(jobsToPersist);
 
   const matches: RankedMatch[] = [];
   for (const job of survivors) {
