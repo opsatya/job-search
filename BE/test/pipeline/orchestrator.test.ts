@@ -50,10 +50,10 @@ describe("runPipeline", () => {
     jest.spyOn(greenhouseModule.GreenhouseSource.prototype, "search").mockResolvedValue([RAW_JOB]);
     jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue(CANDIDATE);
     jest.spyOn(jobsDb, "getExistingDedupeKeys").mockResolvedValue(new Set());
+    jest.spyOn(jobsDb, "saveNewJobs").mockResolvedValue(new Map([["id:greenhouse:1", "db-id-1"]]));
     jest
-      .spyOn(jobsDb, "saveNewJobs")
-      .mockResolvedValue(new Map([["id:greenhouse:1", "db-id-1"]]));
-    jest.spyOn(jobMatchesDb, "saveJobMatch").mockResolvedValue({ overallScore: 95, priority: "P0" });
+      .spyOn(jobMatchesDb, "saveJobMatch")
+      .mockResolvedValue({ overallScore: 95, priority: "P0" });
     jest.spyOn(agentRunsDb, "startAgentRun").mockResolvedValue();
     jest.spyOn(agentRunsDb, "completeAgentRun").mockResolvedValue();
     jest.spyOn(analyzeModule, "analyzeJob").mockResolvedValue({
@@ -87,6 +87,7 @@ describe("runPipeline", () => {
     expect(result.jobsFound).toBe(1);
     expect(result.jobsNew).toBe(1);
     expect(result.jobsAnalyzed).toBe(1);
+    expect(result.jobsNeedingReview).toBe(0);
     expect(result.matches).toHaveLength(1);
     expect(result.matches[0].title).toBe("Software Engineer");
     expect(result.matches[0].overallScore).toBeGreaterThan(0);
@@ -100,10 +101,20 @@ describe("runPipeline", () => {
     );
   });
 
-  it("skips already-seen jobs on a second run", async () => {
+  it("counts jobs whose analysis failed as needing review instead of ranking them", async () => {
     jest
-      .spyOn(jobsDb, "getExistingDedupeKeys")
-      .mockResolvedValue(new Set(["id:greenhouse:1"]));
+      .spyOn(jobMatchesDb, "saveJobMatch")
+      .mockResolvedValue({ overallScore: null, priority: null });
+
+    const result = await runPipeline("test-run-needs-review");
+
+    expect(result.jobsAnalyzed).toBe(1);
+    expect(result.jobsNeedingReview).toBe(1);
+    expect(result.matches).toHaveLength(0);
+  });
+
+  it("skips already-seen jobs on a second run", async () => {
+    jest.spyOn(jobsDb, "getExistingDedupeKeys").mockResolvedValue(new Set(["id:greenhouse:1"]));
 
     const result = await runPipeline("test-run-2");
 

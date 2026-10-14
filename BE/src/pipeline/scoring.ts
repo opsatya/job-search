@@ -32,6 +32,10 @@ export interface JobAnalysisResult {
   applicationRecommendation: "strong_apply" | "apply" | "consider" | "needs_review" | "skip";
   interviewTopicsToPrepare: string[];
   factLabels: Record<string, "FACT" | "INFERENCE" | "UNKNOWN">;
+
+  // Set only by analyzeJob's needs_review fallback, never by model output:
+  // marks a result with no real extracted facts, which must not be scored.
+  analysisError?: string;
 }
 
 export interface CategoryScores {
@@ -69,12 +73,17 @@ export function scoreSkillMatch(candidate: CandidateProfile, facts: JobAnalysisR
   const candidateSkills = flattenCandidateSkills(candidate);
   const requiredRatio = matchRatio(facts.requiredSkills, candidateSkills);
   const preferredRatio = matchRatio(facts.preferredSkills, candidateSkills);
-  return Math.round(requiredRatio * REQUIRED_SKILL_WEIGHT + preferredRatio * PREFERRED_SKILL_WEIGHT);
+  return Math.round(
+    requiredRatio * REQUIRED_SKILL_WEIGHT + preferredRatio * PREFERRED_SKILL_WEIGHT,
+  );
 }
 
 const EXPERIENCE_GAP_YEARS_FOR_ZERO = 2;
 
-export function scoreExperienceMatch(candidate: CandidateProfile, facts: JobAnalysisResult): number {
+export function scoreExperienceMatch(
+  candidate: CandidateProfile,
+  facts: JobAnalysisResult,
+): number {
   // Real LLM output is only ever `JSON.parse`'d and cast to JobAnalysisResult
   // (no runtime schema validation yet — see task-12-report.md), so a real
   // model response can still omit experienceRequirementYears entirely even
@@ -175,7 +184,11 @@ export function scoreDomainMatch(facts: JobAnalysisResult): number {
   return recognized ? 5 : 2;
 }
 
-export function scoreJob(candidate: CandidateProfile, job: Job, facts: JobAnalysisResult): CategoryScores {
+export function scoreJob(
+  candidate: CandidateProfile,
+  job: Job,
+  facts: JobAnalysisResult,
+): CategoryScores {
   return {
     skillMatch: scoreSkillMatch(candidate, facts),
     experienceMatch: scoreExperienceMatch(candidate, facts),

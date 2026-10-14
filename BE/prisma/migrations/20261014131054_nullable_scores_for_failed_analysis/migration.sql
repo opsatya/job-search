@@ -1,0 +1,10 @@
+-- AlterTable
+ALTER TABLE "job_matches" ALTER COLUMN "skillMatch" DROP NOT NULL,
+ALTER COLUMN "experienceMatch" DROP NOT NULL,
+ALTER COLUMN "locationMatch" DROP NOT NULL,
+ALTER COLUMN "seniorityMatch" DROP NOT NULL,
+ALTER COLUMN "educationMatch" DROP NOT NULL,
+ALTER COLUMN "salaryMatch" DROP NOT NULL,
+ALTER COLUMN "domainMatch" DROP NOT NULL,
+ALTER COLUMN "overallScore" DROP NOT NULL,
+ALTER COLUMN "priority" DROP NOT NULL;

@@ -9,6 +9,7 @@ describe("formatResultsForDisplay", () => {
       jobsNew: 21,
       jobsFiltered: 10,
       jobsAnalyzed: 11,
+      jobsNeedingReview: 2,
       matches: [
         {
           title: "Full Stack Engineer",
@@ -28,6 +29,7 @@ describe("formatResultsForDisplay", () => {
     expect(output).toContain("New jobs: 21");
     expect(output).toContain("Filtered: 10");
     expect(output).toContain("Analyzed: 11");
+    expect(output).toContain("Needs review (analysis failed): 2");
     expect(output).toContain("P0 94% — Full Stack Engineer — Company A — India-eligible");
   });
 });

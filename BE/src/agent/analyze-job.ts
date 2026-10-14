@@ -10,6 +10,7 @@ import type { JobAnalysisResult } from "../pipeline/scoring";
 // imports the Prisma client).
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "llama3.1";
+const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || undefined;
 
 // A real end-to-end run (Task 15) found that routing this call through
 // openclaw's conversational `agent` CLI produced free-form prose instead of
@@ -19,7 +20,11 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "llama3.1";
 // /api/generate directly with a JSON-schema `format` constraint (verified
 // live against llama3.1) reliably returns on-schema JSON, so analysis goes
 // straight to Ollama rather than through openclaw.
-const ollamaProvider = new OllamaProvider({ baseUrl: OLLAMA_BASE_URL, model: OLLAMA_MODEL });
+const ollamaProvider = new OllamaProvider({
+  baseUrl: OLLAMA_BASE_URL,
+  model: OLLAMA_MODEL,
+  numCtx: OLLAMA_NUM_CTX,
+});
 
 const TRI_STATE_SCHEMA = {
   type: ["boolean", "string"],
@@ -176,6 +181,7 @@ function needsReviewFallback(reason: string): JobAnalysisResult {
     applicationRecommendation: "needs_review",
     interviewTopicsToPrepare: [],
     factLabels: {},
+    analysisError: reason,
   };
 }
 
@@ -197,7 +203,14 @@ Description: ${job.description}
 ---END-JOB-DATA---`;
 
   try {
-    return await ollamaProvider.generateStructured<JobAnalysisResult>(prompt, ANALYSIS_SCHEMA);
+    const result = await ollamaProvider.generateStructured<JobAnalysisResult>(
+      prompt,
+      ANALYSIS_SCHEMA,
+    );
+    // The schema doesn't forbid extra keys, so never let model output mark
+    // itself as a failed analysis.
+    delete result.analysisError;
+    return result;
   } catch (err) {
     return needsReviewFallback(`Ollama analysis request failed: ${(err as Error).message}`);
   }

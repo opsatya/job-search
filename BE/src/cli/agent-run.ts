@@ -13,6 +13,7 @@ export function formatResultsForDisplay(result: PipelineResult): string {
   lines.push(`New jobs: ${result.jobsNew}`);
   lines.push(`Filtered: ${result.jobsFiltered}`);
   lines.push(`Analyzed: ${result.jobsAnalyzed}`);
+  lines.push(`Needs review (analysis failed): ${result.jobsNeedingReview}`);
   lines.push("");
   lines.push("Top matches:");
   lines.push("");

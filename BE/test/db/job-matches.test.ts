@@ -115,12 +115,41 @@ describe("saveJobMatch", () => {
     expect(job?.status).toBe("reviewed");
   });
 
+  it("saves a failed analysis without scores or priority and leaves the job awaiting review", async () => {
+    // Spec §13: a fallback result has no real facts, so scoring it would
+    // invent a ranking (a real run scored one 76/P2) — persist it unscored.
+    const ids = await saveNewJobs([makeJob()]);
+    const jobId = [...ids.values()][0];
+    const failedAnalysis: JobAnalysisResult = {
+      ...ANALYSIS,
+      applicationRecommendation: "needs_review",
+      analysisError: "Ollama analysis request failed: fetch failed",
+    };
+
+    const result = await saveJobMatch(jobId, makeJob(), CANDIDATE, failedAnalysis);
+
+    expect(result).toEqual({ overallScore: null, priority: null });
+    const match = await prisma.jobMatch.findFirst({ where: { jobId } });
+    expect(match).not.toBeNull();
+    expect(match?.overallScore).toBeNull();
+    expect(match?.skillMatch).toBeNull();
+    expect(match?.priority).toBeNull();
+    expect(match?.applicationRecommendation).toBe("needs_review");
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    expect(job?.matchScore).toBeNull();
+    expect(job?.status).toBe("new");
+  });
+
   it("stores UNKNOWN eligibility as null, not true or false", async () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
     const unknownAnalysis: JobAnalysisResult = {
       ...ANALYSIS,
-      eligibility: { ...ANALYSIS.eligibility, indiaEligible: "UNKNOWN", worldwideRemote: "UNKNOWN" },
+      eligibility: {
+        ...ANALYSIS.eligibility,
+        indiaEligible: "UNKNOWN",
+        worldwideRemote: "UNKNOWN",
+      },
     };
 
     await saveJobMatch(jobId, makeJob(), CANDIDATE, unknownAnalysis);

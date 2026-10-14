@@ -27,6 +27,7 @@ export interface PipelineResult {
   jobsNew: number;
   jobsFiltered: number;
   jobsAnalyzed: number;
+  jobsNeedingReview: number;
   matches: RankedMatch[];
 }
 
@@ -76,6 +77,7 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
   const savedIds = await saveNewJobs(jobsToPersist);
 
   const matches: RankedMatch[] = [];
+  let jobsNeedingReview = 0;
   for (const job of survivors) {
     const jobId = savedIds.get(dedupeKey(job));
     if (!jobId) continue;
@@ -83,6 +85,10 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
     try {
       const analysis = await analyzeJob(job);
       const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
+      if (overallScore === null || priority === null) {
+        jobsNeedingReview++;
+        continue;
+      }
 
       matches.push({
         title: job.title,
@@ -111,6 +117,7 @@ export async function runPipeline(runId: string): Promise<PipelineResult> {
     jobsNew: newJobs.length,
     jobsFiltered,
     jobsAnalyzed: survivors.length,
+    jobsNeedingReview,
     matches,
   };
 

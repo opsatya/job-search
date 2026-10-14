@@ -50,16 +50,17 @@ model JobMatch {
   jobId                     String
   job                       Job      @relation(fields: [jobId], references: [id])
 
-  // Deterministic category scores (spec §8) — computed in TypeScript, never by the LLM
-  skillMatch                Float
-  experienceMatch           Float
-  locationMatch             Float
-  seniorityMatch            Float
-  educationMatch            Float
-  salaryMatch               Float
-  domainMatch               Float
-  overallScore              Float
-  priority                  String   // "P0" | "P1" | "P2" | "P3"
+  // Deterministic category scores (spec §8) — computed in TypeScript, never by the LLM.
+  // Null (with a null priority) when analysis failed: nothing real to score (spec §13).
+  skillMatch                Float?
+  experienceMatch           Float?
+  locationMatch             Float?
+  seniorityMatch            Float?
+  educationMatch            Float?
+  salaryMatch               Float?
+  domainMatch               Float?
+  overallScore              Float?
+  priority                  String?  // "P0" | "P1" | "P2" | "P3"
 
   // Extracted facts (LLM output, used as scoring input — not scores themselves)
   requiredSkills            String[]
