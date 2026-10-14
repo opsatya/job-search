@@ -86,4 +86,19 @@ describe("analyzeJob (direct Ollama structured-output branch)", () => {
 
     expect(result.analysisError).toBeUndefined();
   });
+
+  it("falls back to needs_review when the extraction isn't grounded in the posting", async () => {
+    jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
+      name: "Satyajeet Singh",
+    } as never);
+    jest
+      .spyOn(OllamaProvider.prototype, "generateStructured")
+      .mockResolvedValue({ ...ANALYSIS, requiredSkills: ["Prisma ORM", "Zod", "BullMQ"] });
+
+    const result = await analyzeJob(JOB);
+
+    expect(result.applicationRecommendation).toBe("needs_review");
+    expect(result.analysisError).toMatch(/not grounded in the posting/);
+    expect(result.eligibility.indiaEligible).toBe("UNKNOWN");
+  });
 });

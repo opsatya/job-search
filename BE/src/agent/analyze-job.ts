@@ -2,6 +2,7 @@ import { getCandidateProfile } from "../db/candidate-profile";
 import { OllamaProvider } from "../llm/ollama-provider";
 import type { Job } from "../types/job";
 import type { JobAnalysisResult } from "../pipeline/scoring";
+import { groundAnalysis } from "../pipeline/grounding";
 
 // Importing candidate-profile (which imports the Prisma client) causes
 // process.env to be populated from BE/.env as a side effect, so these reads
@@ -202,16 +203,16 @@ Salary: ${job.salaryMin ?? "not disclosed"}-${job.salaryMax ?? "not disclosed"} 
 Description: ${job.description}
 ---END-JOB-DATA---`;
 
+  let result: JobAnalysisResult;
   try {
-    const result = await ollamaProvider.generateStructured<JobAnalysisResult>(
-      prompt,
-      ANALYSIS_SCHEMA,
-    );
-    // The schema doesn't forbid extra keys, so never let model output mark
-    // itself as a failed analysis.
-    delete result.analysisError;
-    return result;
+    result = await ollamaProvider.generateStructured<JobAnalysisResult>(prompt, ANALYSIS_SCHEMA);
   } catch (err) {
     return needsReviewFallback(`Ollama analysis request failed: ${(err as Error).message}`);
   }
+  // The schema doesn't forbid extra keys, so never let model output mark
+  // itself as a failed analysis.
+  delete result.analysisError;
+
+  const grounded = groundAnalysis(job, result);
+  return grounded.ok ? grounded.analysis : needsReviewFallback(grounded.reason);
 }

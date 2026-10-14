@@ -50,7 +50,7 @@ export interface CategoryScores {
 
 // Spelling variants of the *same* skill only — never related-but-different
 // skills (REST ≠ GraphQL, AWS ≠ Kubernetes), per the anti-hallucination rule.
-const SKILL_ALIASES: Record<string, string> = {
+export const SKILL_ALIASES: Record<string, string> = {
   postgres: "postgresql",
   js: "javascript",
   ts: "typescript",
