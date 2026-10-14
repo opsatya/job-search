@@ -17,11 +17,22 @@ function makeJob(sourceJobId: string): Job {
   };
 }
 
+// Scoped to this file's own fixture dedupeKeys ("id:greenhouse:1"/"2") rather
+// than wiping the whole table — these tests run against the same
+// DATABASE_URL as real agent runs (no separate test DB), so an unscoped
+// deleteMany() would silently destroy real, already-persisted job data. This
+// was caught for real by Task 15's end-to-end verification: running `npm
+// test` after populating the DB with a real pipeline run wiped every row.
+const TEST_DEDUPE_KEYS = ["id:greenhouse:1", "id:greenhouse:2"];
+
+async function cleanupTestFixtures(): Promise<void> {
+  await prisma.jobMatch.deleteMany({ where: { job: { dedupeKey: { in: TEST_DEDUPE_KEYS } } } });
+  await prisma.job.deleteMany({ where: { dedupeKey: { in: TEST_DEDUPE_KEYS } } });
+}
+
 describe("jobs persistence", () => {
-  afterEach(async () => {
-    await prisma.jobMatch.deleteMany();
-    await prisma.job.deleteMany();
-  });
+  beforeEach(cleanupTestFixtures);
+  afterEach(cleanupTestFixtures);
 
   afterAll(async () => {
     await prisma.$disconnect();
@@ -30,7 +41,7 @@ describe("jobs persistence", () => {
   it("saves new jobs and returns their DB ids keyed by dedupe key", async () => {
     const ids = await saveNewJobs([makeJob("1"), makeJob("2")]);
     expect(ids.size).toBe(2);
-    const count = await prisma.job.count();
+    const count = await prisma.job.count({ where: { dedupeKey: { in: TEST_DEDUPE_KEYS } } });
     expect(count).toBe(2);
   });
 
@@ -48,7 +59,7 @@ describe("jobs persistence", () => {
       return !existing.has(key);
     });
     await saveNewJobs(jobs);
-    const count = await prisma.job.count();
+    const count = await prisma.job.count({ where: { dedupeKey: { in: TEST_DEDUPE_KEYS } } });
     expect(count).toBe(2);
   });
 });

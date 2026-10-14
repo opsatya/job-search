@@ -60,22 +60,36 @@ function makeJob(): Job {
   return {
     id: "x",
     source: "greenhouse",
-    sourceJobId: "1",
+    // A fixture id distinct from test/db/jobs.test.ts's ("1"/"2") — Jest runs
+    // test files in separate parallel workers by default, and both files hit
+    // the same real DATABASE_URL, so sharing a dedupeKey across files causes
+    // a cross-file race (one file's cleanup/insert collides with the
+    // other's), surfaced for real by Task 15's end-to-end run.
+    sourceJobId: "jm-1",
     company: "Acme",
     title: "Software Engineer",
     description: "desc",
-    url: "https://example.com/1",
+    url: "https://example.com/jm-1",
     locations: ["Remote"],
     discoveredAt: new Date(),
     status: "new",
   };
 }
 
+// Scoped to this file's own fixture dedupeKey ("id:greenhouse:1") rather than
+// wiping the whole table — see the comment in test/db/jobs.test.ts for why an
+// unscoped deleteMany() is unsafe against a DATABASE_URL that also holds real
+// pipeline data (Task 15's end-to-end run found this the hard way).
+const TEST_DEDUPE_KEY = "id:greenhouse:jm-1";
+
+async function cleanupTestFixtures(): Promise<void> {
+  await prisma.jobMatch.deleteMany({ where: { job: { dedupeKey: TEST_DEDUPE_KEY } } });
+  await prisma.job.deleteMany({ where: { dedupeKey: TEST_DEDUPE_KEY } });
+}
+
 describe("saveJobMatch", () => {
-  afterEach(async () => {
-    await prisma.jobMatch.deleteMany();
-    await prisma.job.deleteMany();
-  });
+  beforeEach(cleanupTestFixtures);
+  afterEach(cleanupTestFixtures);
   afterAll(async () => {
     await prisma.$disconnect();
   });

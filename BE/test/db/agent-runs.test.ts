@@ -1,9 +1,18 @@
 import { prisma } from "../../src/db/client";
 import { startAgentRun, completeAgentRun } from "../../src/db/agent-runs";
 
+// Scoped to this file's own fixture runId rather than wiping the whole
+// table — see the comment in test/db/jobs.test.ts for why an unscoped
+// deleteMany() is unsafe against a DATABASE_URL that also holds real
+// agent_runs history.
+const TEST_RUN_ID = "run-1";
+
 describe("agent run tracking", () => {
+  beforeEach(async () => {
+    await prisma.agentRun.deleteMany({ where: { runId: TEST_RUN_ID } });
+  });
   afterEach(async () => {
-    await prisma.agentRun.deleteMany();
+    await prisma.agentRun.deleteMany({ where: { runId: TEST_RUN_ID } });
   });
   afterAll(async () => {
     await prisma.$disconnect();
