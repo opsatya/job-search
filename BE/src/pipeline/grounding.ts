@@ -1,5 +1,5 @@
 import { normalizeSkill, SKILL_ALIASES } from "./scoring";
-import type { JobAnalysisResult } from "./scoring";
+import type { JobFacts } from "./scoring";
 import type { Job } from "../types/job";
 
 function compact(text: string): string {
@@ -34,8 +34,26 @@ const WORLDWIDE_TERMS = /\b(worldwide|anywhere|global|globally|any country|all c
 // worldwide eligibility for a US-only role (seen on real Figma postings).
 function groundEligibility(
   job: Job,
-  eligibility: JobAnalysisResult["eligibility"],
-): { eligibility: JobAnalysisResult["eligibility"]; downgraded: string[] } {
+  eligibility: JobFacts["eligibility"],
+): { eligibility: JobFacts["eligibility"]; downgraded: string[] } {
+  const postingText = compact(`${job.title}\n${job.locations.join("\n")}\n${job.description}`);
+  const evidenceIsQuote =
+    eligibility.eligibilityEvidence.trim().length > 0 &&
+    postingText.includes(compact(eligibility.eligibilityEvidence));
+  if (
+    !evidenceIsQuote &&
+    (eligibility.indiaEligible === true || eligibility.worldwideRemote === true)
+  ) {
+    return {
+      eligibility: {
+        ...eligibility,
+        indiaEligible: eligibility.indiaEligible === true ? "UNKNOWN" : eligibility.indiaEligible,
+        worldwideRemote:
+          eligibility.worldwideRemote === true ? "UNKNOWN" : eligibility.worldwideRemote,
+      },
+      downgraded: ["evidence-not-quoted"],
+    };
+  }
   const support = `${eligibility.eligibilityEvidence}\n${job.locations.join("\n")}`;
   const grounded = { ...eligibility };
   const downgraded: string[] = [];
@@ -50,17 +68,20 @@ function groundEligibility(
   return { eligibility: grounded, downgraded };
 }
 
-export type GroundingResult =
-  { ok: true; analysis: JobAnalysisResult } | { ok: false; reason: string };
+export type GroundingResult = { ok: true; analysis: JobFacts } | { ok: false; reason: string };
 
 // Enforces the anti-hallucination rule in code: an extracted skill the posting
 // never mentions isn't a fact. A real run had llama3.1 copy the candidate's
 // own skills into an ML job's requiredSkills (0/11 in the posting), which the
 // deterministic scorer then ranked P1 — so a mostly-ungrounded extraction is
 // rejected outright (and retried), and isolated misses are dropped.
-export { groundEligibility };
+export { groundEligibility, INDIA_TERMS, WORLDWIDE_TERMS };
 
-export function groundAnalysis(job: Job, analysis: JobAnalysisResult): GroundingResult {
+export function postingMentionsSkill(postingText: string, skill: string): boolean {
+  return appearsIn(compact(postingText), skill);
+}
+
+export function groundAnalysis(job: Job, analysis: JobFacts): GroundingResult {
   const postingText = compact(`${job.title}\n${job.description}`);
   const extracted = [...analysis.requiredSkills, ...analysis.preferredSkills];
   const ungrounded = extracted.filter((skill) => !appearsIn(postingText, skill));
@@ -80,7 +101,11 @@ export function groundAnalysis(job: Job, analysis: JobAnalysisResult): Grounding
       `Dropped extracted skills not found in the job posting: ${ungrounded.join(", ")}`,
     );
   }
-  if (downgraded.length > 0) {
+  if (downgraded.includes("evidence-not-quoted")) {
+    concerns.push(
+      "Eligibility evidence is not a quote from the posting; true claims set to UNKNOWN",
+    );
+  } else if (downgraded.length > 0) {
     concerns.push(
       `Eligibility claims not supported by the posting's evidence or locations, set to UNKNOWN: ${downgraded.join(", ")}`,
     );

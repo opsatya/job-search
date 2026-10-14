@@ -15,7 +15,9 @@ export interface EligibilityFacts {
   salaryEvidence?: string;
 }
 
-export interface JobAnalysisResult {
+// What the extraction-only LLM call (plus deterministic grounding) yields.
+// `concerns` here are code-generated only — the model never writes them.
+export interface JobFacts {
   requiredSkills: string[];
   preferredSkills: string[];
   experienceRequirementYears: { min?: number; max?: number };
@@ -23,7 +25,14 @@ export interface JobAnalysisResult {
   educationRequirement?: string;
   domain?: string;
   eligibility: EligibilityFacts;
+  factLabels: Record<string, "FACT" | "INFERENCE" | "UNKNOWN">;
+  concerns: string[];
+  // Set only by analyzeJob's fallback, never by model output.
+  analysisError?: string;
+}
 
+// Generated in code from facts + profile + scores (spec §6.2).
+export interface MatchExplanation {
   whyMatches: string;
   strongestMatchingSkills: string[];
   missingSkills: string[];
@@ -31,12 +40,10 @@ export interface JobAnalysisResult {
   concerns: string[];
   applicationRecommendation: "strong_apply" | "apply" | "consider" | "needs_review" | "skip";
   interviewTopicsToPrepare: string[];
-  factLabels: Record<string, "FACT" | "INFERENCE" | "UNKNOWN">;
-
-  // Set only by analyzeJob's needs_review fallback, never by model output:
-  // marks a result with no real extracted facts, which must not be scored.
-  analysisError?: string;
 }
+
+// Legacy shape (facts + explanation); kept so existing fixtures compile.
+export type JobAnalysisResult = JobFacts & Omit<MatchExplanation, "concerns">;
 
 export interface CategoryScores {
   skillMatch: number;
@@ -94,7 +101,7 @@ function matchRatio(required: string[], candidateSkills: Set<string>): number {
 // both lists are derived here from the extracted job skills and the profile.
 export function deriveSkillLists(
   candidate: CandidateProfile,
-  facts: JobAnalysisResult,
+  facts: JobFacts,
 ): { strongestMatchingSkills: string[]; missingSkills: string[] } {
   const candidateSkills = flattenCandidateSkills(candidate);
   const seen = new Set<string>();
@@ -112,36 +119,10 @@ export function deriveSkillLists(
   return { strongestMatchingSkills, missingSkills };
 }
 
-// Deterministic checks that flag model output contradicting the profile or
-// the computed score, surfaced as concerns rather than silently trusted.
-export function consistencyConcerns(
-  candidate: CandidateProfile,
-  facts: JobAnalysisResult,
-  priority: PriorityTier,
-): string[] {
-  const concerns: string[] = [];
-  const candidateSkills = flattenCandidateSkills(candidate);
-
-  const unsupported = facts.strongestMatchingSkills.filter(
-    (skill) => !candidateSkills.has(normalizeSkill(skill)),
-  );
-  if (unsupported.length > 0) {
-    concerns.push(
-      `Model claimed matching skills not in the candidate profile (${unsupported.join(", ")}) — its explanation may be unreliable`,
-    );
-  }
-
-  const recommendation = facts.applicationRecommendation;
-  if ((recommendation === "apply" || recommendation === "strong_apply") && priority === "P3") {
-    concerns.push(`Model recommended "${recommendation}" but the computed priority is P3`);
-  }
-  return concerns;
-}
-
 const REQUIRED_SKILL_WEIGHT = 22;
 const PREFERRED_SKILL_WEIGHT = 8;
 
-export function scoreSkillMatch(candidate: CandidateProfile, facts: JobAnalysisResult): number {
+export function scoreSkillMatch(candidate: CandidateProfile, facts: JobFacts): number {
   const candidateSkills = flattenCandidateSkills(candidate);
   const requiredRatio = matchRatio(facts.requiredSkills, candidateSkills);
   const preferredRatio = matchRatio(facts.preferredSkills, candidateSkills);
@@ -152,11 +133,8 @@ export function scoreSkillMatch(candidate: CandidateProfile, facts: JobAnalysisR
 
 const EXPERIENCE_GAP_YEARS_FOR_ZERO = 2;
 
-export function scoreExperienceMatch(
-  candidate: CandidateProfile,
-  facts: JobAnalysisResult,
-): number {
-  // Real LLM output is only ever `JSON.parse`'d and cast to JobAnalysisResult
+export function scoreExperienceMatch(candidate: CandidateProfile, facts: JobFacts): number {
+  // Real LLM output is only ever `JSON.parse`'d and cast to JobFacts
   // (no runtime schema validation yet — see task-12-report.md), so a real
   // model response can still omit experienceRequirementYears entirely even
   // when the request schema marks it required. Guard defensively rather than
@@ -169,11 +147,7 @@ export function scoreExperienceMatch(
   return Math.round(20 * fraction);
 }
 
-export function scoreLocationMatch(
-  candidate: CandidateProfile,
-  job: Job,
-  facts: JobAnalysisResult,
-): number {
+export function scoreLocationMatch(candidate: CandidateProfile, job: Job, facts: JobFacts): number {
   const { eligibility } = facts;
 
   if (eligibility.remoteStatus === "remote") {
@@ -195,7 +169,7 @@ export function scoreLocationMatch(
   return preferredCity ? 18 : 5;
 }
 
-export function scoreSeniorityMatch(facts: JobAnalysisResult): number {
+export function scoreSeniorityMatch(facts: JobFacts): number {
   switch (facts.seniorityLevel) {
     case "junior":
       return 15;
@@ -218,7 +192,7 @@ const RECOGNIZED_EDUCATION_TERMS = [
   "degree",
 ];
 
-export function scoreEducationMatch(facts: JobAnalysisResult): number {
+export function scoreEducationMatch(facts: JobFacts): number {
   if (!facts.educationRequirement) return 5;
   const requirement = facts.educationRequirement.toLowerCase();
   const recognized = RECOGNIZED_EDUCATION_TERMS.some((term) => requirement.includes(term));
@@ -250,17 +224,13 @@ const POSITIVE_DOMAINS = [
   "productivity",
 ];
 
-export function scoreDomainMatch(facts: JobAnalysisResult): number {
+export function scoreDomainMatch(facts: JobFacts): number {
   if (!facts.domain) return 3;
   const recognized = POSITIVE_DOMAINS.includes(facts.domain.toLowerCase());
   return recognized ? 5 : 2;
 }
 
-export function scoreJob(
-  candidate: CandidateProfile,
-  job: Job,
-  facts: JobAnalysisResult,
-): CategoryScores {
+export function scoreJob(candidate: CandidateProfile, job: Job, facts: JobFacts): CategoryScores {
   return {
     skillMatch: scoreSkillMatch(candidate, facts),
     experienceMatch: scoreExperienceMatch(candidate, facts),

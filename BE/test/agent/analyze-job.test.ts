@@ -1,9 +1,7 @@
-// BE/test/agent/analyze-job.test.ts
 import { analyzeJob } from "../../src/agent/analyze-job";
 import * as candidateProfileModule from "../../src/db/candidate-profile";
 import { OllamaProvider } from "../../src/llm/ollama-provider";
 import type { Job } from "../../src/types/job";
-import type { JobAnalysisResult } from "../../src/pipeline/scoring";
 
 const JOB: Job = {
   id: "job_1",
@@ -13,12 +11,12 @@ const JOB: Job = {
   title: "Software Engineer",
   description: "Build Node.js APIs. Remote - India.",
   url: "https://example.com/1",
-  locations: ["Remote"],
+  locations: ["Remote - India"],
   discoveredAt: new Date(),
   status: "new",
 };
 
-const ANALYSIS: JobAnalysisResult = {
+const MODEL_OUTPUT = {
   requiredSkills: ["Node.js"],
   preferredSkills: [],
   experienceRequirementYears: {},
@@ -30,75 +28,57 @@ const ANALYSIS: JobAnalysisResult = {
     visaRequired: false,
     relocationRequired: false,
     eligibilityConfidence: "high",
-    eligibilityEvidence: "Job posting states: Remote - India",
+    eligibilityEvidence: "Remote - India",
   },
-  whyMatches: "Good fit.",
-  strongestMatchingSkills: ["Node.js"],
-  missingSkills: [],
-  concerns: [],
-  applicationRecommendation: "strong_apply",
-  interviewTopicsToPrepare: [],
   factLabels: { indiaEligible: "FACT" },
 };
 
-describe("analyzeJob (direct Ollama structured-output branch)", () => {
-  it("calls Ollama with a schema constraint and returns the parsed analysis", async () => {
-    jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
-      name: "Satyajeet Singh",
-    } as never);
+describe("analyzeJob (extraction-only)", () => {
+  it("never puts the candidate profile in the prompt and returns grounded facts", async () => {
+    const profileSpy = jest.spyOn(candidateProfileModule, "getCandidateProfile");
     const generateSpy = jest
       .spyOn(OllamaProvider.prototype, "generateStructured")
-      .mockResolvedValue(ANALYSIS);
+      .mockResolvedValue(MODEL_OUTPUT);
 
-    const result = await analyzeJob(JOB);
+    const facts = await analyzeJob(JOB);
 
-    expect(generateSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Software Engineer"),
-      expect.objectContaining({ type: "object" }),
-    );
-    expect(result).toEqual(ANALYSIS);
+    expect(profileSpy).not.toHaveBeenCalled();
+    const [prompt, schema] = generateSpy.mock.calls[0] as [string, { properties: object }];
+    expect(prompt).not.toMatch(/CANDIDATE PROFILE/);
+    expect(prompt).toContain("---JOB-DATA---");
+    expect(Object.keys(schema.properties)).not.toEqual(expect.arrayContaining(["whyMatches"]));
+    expect(Object.keys(schema.properties)).not.toContain("applicationRecommendation");
+    expect(facts.requiredSkills).toEqual(["Node.js"]);
+    expect(facts.concerns).toEqual([]);
+    expect(facts.analysisError).toBeUndefined();
   });
 
-  it("falls back to needs_review with UNKNOWN eligibility when the Ollama request fails", async () => {
-    jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
-      name: "Satyajeet Singh",
-    } as never);
+  it("falls back to an unscored needs-review result when the Ollama request fails", async () => {
     jest
       .spyOn(OllamaProvider.prototype, "generateStructured")
-      .mockRejectedValue(new Error("Failed to parse Ollama response as JSON: not json"));
+      .mockRejectedValue(new Error("fetch failed"));
 
-    const result = await analyzeJob(JOB);
+    const facts = await analyzeJob(JOB);
 
-    expect(result.applicationRecommendation).toBe("needs_review");
-    expect(result.eligibility.indiaEligible).toBe("UNKNOWN");
-    expect(result.analysisError).toMatch(/Ollama analysis request failed/);
+    expect(facts.analysisError).toMatch(/Ollama analysis request failed: fetch failed/);
+    expect(facts.eligibility.indiaEligible).toBe("UNKNOWN");
   });
 
-  it("never lets model output claim to be a failed analysis", async () => {
-    jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
-      name: "Satyajeet Singh",
-    } as never);
+  it("never lets model output mark itself as a failed analysis", async () => {
     jest
       .spyOn(OllamaProvider.prototype, "generateStructured")
-      .mockResolvedValue({ ...ANALYSIS, analysisError: "injected" });
+      .mockResolvedValue({ ...MODEL_OUTPUT, analysisError: "injected" });
 
-    const result = await analyzeJob(JOB);
-
-    expect(result.analysisError).toBeUndefined();
+    const facts = await analyzeJob(JOB);
+    expect(facts.analysisError).toBeUndefined();
   });
 
-  it("falls back to needs_review when the extraction isn't grounded in the posting", async () => {
-    jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
-      name: "Satyajeet Singh",
-    } as never);
+  it("rejects an extraction that isn't grounded in the posting", async () => {
     jest
       .spyOn(OllamaProvider.prototype, "generateStructured")
-      .mockResolvedValue({ ...ANALYSIS, requiredSkills: ["Prisma ORM", "Zod", "BullMQ"] });
+      .mockResolvedValue({ ...MODEL_OUTPUT, requiredSkills: ["Prisma ORM", "Zod", "BullMQ"] });
 
-    const result = await analyzeJob(JOB);
-
-    expect(result.applicationRecommendation).toBe("needs_review");
-    expect(result.analysisError).toMatch(/not grounded in the posting/);
-    expect(result.eligibility.indiaEligible).toBe("UNKNOWN");
+    const facts = await analyzeJob(JOB);
+    expect(facts.analysisError).toMatch(/not grounded in the posting/);
   });
 });

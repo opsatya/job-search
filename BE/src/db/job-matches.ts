@@ -1,12 +1,7 @@
 import { prisma } from "./client";
-import {
-  scoreJob,
-  calculateOverallScore,
-  categorize,
-  deriveSkillLists,
-  consistencyConcerns,
-} from "../pipeline/scoring";
-import type { JobAnalysisResult, Tri, PriorityTier } from "../pipeline/scoring";
+import { scoreJob, calculateOverallScore, categorize } from "../pipeline/scoring";
+import { explainMatch } from "../pipeline/explain";
+import type { JobFacts, MatchExplanation, Tri, PriorityTier } from "../pipeline/scoring";
 import type { CandidateProfile } from "../types/candidate";
 import type { Job } from "../types/job";
 
@@ -18,31 +13,38 @@ export async function saveJobMatch(
   jobId: string,
   job: Job,
   candidate: CandidateProfile,
-  analysis: JobAnalysisResult,
+  facts: JobFacts,
 ): Promise<{ overallScore: number | null; priority: PriorityTier | null }> {
-  if (analysis.analysisError) {
+  if (facts.analysisError) {
     // Spec §13: a failed analysis carries no real facts, so scoring it would
     // invent a ranking. Persist what we have, unscored, and leave the job
     // "new" so it stays visibly awaiting review.
     // A retry replaces the previous attempt's row rather than piling up rows.
     await prisma.$transaction([
       prisma.jobMatch.deleteMany({ where: { jobId } }),
-      prisma.jobMatch.create({ data: { jobId, ...analysisColumns(analysis) } }),
+      prisma.jobMatch.create({
+        data: {
+          jobId,
+          ...factColumns(facts),
+          ...explanationColumns({
+            whyMatches: "",
+            strongestMatchingSkills: [],
+            missingSkills: [],
+            concerns: facts.concerns,
+            applicationRecommendation: "needs_review",
+            interviewTopicsToPrepare: [],
+          }),
+        },
+      }),
       prisma.job.update({ where: { id: jobId }, data: { analysisAttempts: { increment: 1 } } }),
     ]);
     return { overallScore: null, priority: null };
   }
 
-  const scores = scoreJob(candidate, job, analysis);
+  const scores = scoreJob(candidate, job, facts);
   const overallScore = calculateOverallScore(scores);
   const priority = categorize(overallScore);
-  // Skill lists come from code, not the model; contradictions between the
-  // model's output and the profile/score are surfaced as concerns.
-  const reconciled: JobAnalysisResult = {
-    ...analysis,
-    ...deriveSkillLists(candidate, analysis),
-    concerns: [...analysis.concerns, ...consistencyConcerns(candidate, analysis, priority)],
-  };
+  const explanation = explainMatch(candidate, job, facts, priority);
 
   await prisma.$transaction([
     prisma.jobMatch.deleteMany({ where: { jobId } }),
@@ -58,7 +60,8 @@ export async function saveJobMatch(
         domainMatch: scores.domainMatch,
         overallScore,
         priority,
-        ...analysisColumns(reconciled),
+        ...factColumns(facts),
+        ...explanationColumns(explanation),
       },
     }),
     prisma.job.update({
@@ -74,31 +77,34 @@ export async function saveJobMatch(
   return { overallScore, priority };
 }
 
-function analysisColumns(analysis: JobAnalysisResult) {
+function factColumns(facts: JobFacts) {
   return {
-    requiredSkills: analysis.requiredSkills,
-    preferredSkills: analysis.preferredSkills,
-    seniorityLevel: analysis.seniorityLevel,
-    educationRequirement: analysis.educationRequirement,
-    domain: analysis.domain,
+    requiredSkills: facts.requiredSkills,
+    preferredSkills: facts.preferredSkills,
+    seniorityLevel: facts.seniorityLevel,
+    educationRequirement: facts.educationRequirement,
+    domain: facts.domain,
+    factLabels: facts.factLabels,
+    remoteStatus: facts.eligibility.remoteStatus,
+    indiaEligible: triToDb(facts.eligibility.indiaEligible),
+    worldwideRemote: triToDb(facts.eligibility.worldwideRemote),
+    locationRestriction: facts.eligibility.locationRestriction,
+    visaRequired: triToDb(facts.eligibility.visaRequired),
+    relocationRequired: triToDb(facts.eligibility.relocationRequired),
+    eligibilityConfidence: facts.eligibility.eligibilityConfidence,
+    eligibilityEvidence: facts.eligibility.eligibilityEvidence,
+    salaryEvidence: facts.eligibility.salaryEvidence,
+  };
+}
 
-    whyMatches: analysis.whyMatches,
-    strongestMatchingSkills: analysis.strongestMatchingSkills,
-    missingSkills: analysis.missingSkills,
-    experienceGap: analysis.experienceGap,
-    concerns: analysis.concerns,
-    applicationRecommendation: analysis.applicationRecommendation,
-    interviewTopics: analysis.interviewTopicsToPrepare,
-    factLabels: analysis.factLabels,
-
-    remoteStatus: analysis.eligibility.remoteStatus,
-    indiaEligible: triToDb(analysis.eligibility.indiaEligible),
-    worldwideRemote: triToDb(analysis.eligibility.worldwideRemote),
-    locationRestriction: analysis.eligibility.locationRestriction,
-    visaRequired: triToDb(analysis.eligibility.visaRequired),
-    relocationRequired: triToDb(analysis.eligibility.relocationRequired),
-    eligibilityConfidence: analysis.eligibility.eligibilityConfidence,
-    eligibilityEvidence: analysis.eligibility.eligibilityEvidence,
-    salaryEvidence: analysis.eligibility.salaryEvidence,
+function explanationColumns(explanation: MatchExplanation) {
+  return {
+    whyMatches: explanation.whyMatches,
+    strongestMatchingSkills: explanation.strongestMatchingSkills,
+    missingSkills: explanation.missingSkills,
+    experienceGap: explanation.experienceGap,
+    concerns: explanation.concerns,
+    applicationRecommendation: explanation.applicationRecommendation,
+    interviewTopics: explanation.interviewTopicsToPrepare,
   };
 }

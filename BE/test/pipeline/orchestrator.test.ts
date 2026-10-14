@@ -74,12 +74,7 @@ describe("runPipeline", () => {
         eligibilityConfidence: "high",
         eligibilityEvidence: "Job posting states: Remote - India",
       },
-      whyMatches: "Great fit.",
-      strongestMatchingSkills: ["Node.js"],
-      missingSkills: [],
       concerns: [],
-      applicationRecommendation: "strong_apply",
-      interviewTopicsToPrepare: [],
       factLabels: {},
     });
   });

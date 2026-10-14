@@ -126,7 +126,11 @@ describe("groundAnalysis", () => {
 
     it("keeps an India claim backed by the job's structured location", () => {
       const result = groundAnalysis(
-        { ...JOB, locations: ["Bangalore, India"] },
+        {
+          ...JOB,
+          locations: ["Bangalore, India"],
+          description: `${JOB.description} All of our roles are remote.`,
+        },
         withEligibility({
           indiaEligible: true,
           eligibilityEvidence: "All of our roles are remote.",
@@ -137,10 +141,26 @@ describe("groundAnalysis", () => {
 
     it("keeps a worldwide claim whose evidence says so", () => {
       const result = groundAnalysis(
-        JOB,
+        { ...JOB, locations: ["Remote-Global"] },
         withEligibility({ worldwideRemote: true, eligibilityEvidence: "Remote-Global" }),
       );
       expect(result.ok && result.analysis.eligibility.worldwideRemote).toBe(true);
+    });
+
+    it("downgrades true claims whose evidence is not a quote from the posting", () => {
+      const result = groundAnalysis(
+        { ...JOB, locations: ["Bangalore, India"] },
+        withEligibility({
+          indiaEligible: true,
+          eligibilityEvidence: "Open to candidates in India",
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.analysis.eligibility.indiaEligible).toBe("UNKNOWN");
+      expect(result.analysis.concerns).toContain(
+        "Eligibility evidence is not a quote from the posting; true claims set to UNKNOWN",
+      );
     });
 
     it("never changes false or UNKNOWN claims", () => {

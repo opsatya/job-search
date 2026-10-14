@@ -3,7 +3,7 @@ import { saveNewJobs } from "../../src/db/jobs";
 import { saveJobMatch } from "../../src/db/job-matches";
 import type { Job } from "../../src/types/job";
 import type { CandidateProfile } from "../../src/types/candidate";
-import type { JobAnalysisResult } from "../../src/pipeline/scoring";
+import type { JobFacts } from "../../src/pipeline/scoring";
 
 const CANDIDATE: CandidateProfile = {
   name: "Satyajeet Singh",
@@ -32,7 +32,7 @@ const CANDIDATE: CandidateProfile = {
   },
 };
 
-const ANALYSIS: JobAnalysisResult = {
+const FACTS: JobFacts = {
   requiredSkills: ["TypeScript", "Node.js"],
   preferredSkills: ["React"],
   experienceRequirementYears: { min: 0.5 },
@@ -47,12 +47,7 @@ const ANALYSIS: JobAnalysisResult = {
     eligibilityConfidence: "high",
     eligibilityEvidence: "Job posting states: Remote - India",
   },
-  whyMatches: "Strong TypeScript/Node alignment.",
-  strongestMatchingSkills: ["TypeScript", "Node.js"],
-  missingSkills: [],
   concerns: [],
-  applicationRecommendation: "strong_apply",
-  interviewTopicsToPrepare: ["System design basics"],
   factLabels: { indiaEligible: "FACT" },
 };
 
@@ -98,7 +93,7 @@ describe("saveJobMatch", () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
 
-    await saveJobMatch(jobId, makeJob(), CANDIDATE, ANALYSIS);
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, FACTS);
 
     const match = await prisma.jobMatch.findFirst({ where: { jobId } });
     expect(match).not.toBeNull();
@@ -107,7 +102,7 @@ describe("saveJobMatch", () => {
     expect(match?.priority).toMatch(/^P[0-3]$/);
     expect(match?.indiaEligible).toBe(true);
     expect(match?.worldwideRemote).toBe(false);
-    expect(match?.whyMatches).toBe("Strong TypeScript/Node alignment.");
+    expect(match?.whyMatches).toMatch(/^Matches /);
     expect((match?.factLabels as Record<string, string>).indiaEligible).toBe("FACT");
 
     const job = await prisma.job.findUnique({ where: { id: jobId } });
@@ -120,9 +115,8 @@ describe("saveJobMatch", () => {
     // invent a ranking (a real run scored one 76/P2) — persist it unscored.
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
-    const failedAnalysis: JobAnalysisResult = {
-      ...ANALYSIS,
-      applicationRecommendation: "needs_review",
+    const failedAnalysis: JobFacts = {
+      ...FACTS,
       analysisError: "Ollama analysis request failed: fetch failed",
     };
 
@@ -140,35 +134,31 @@ describe("saveJobMatch", () => {
     expect(job?.status).toBe("new");
   });
 
-  it("stores code-derived skill lists and flags model claims the profile doesn't support", async () => {
+  it("stores the code-generated explanation alongside the facts", async () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
-    const hallucinated: JobAnalysisResult = {
-      ...ANALYSIS,
-      requiredSkills: ["Python", "Node.js"],
-      strongestMatchingSkills: ["Python", "Node.js"],
-      missingSkills: [],
-      concerns: ["Small team"],
-    };
 
-    await saveJobMatch(jobId, makeJob(), CANDIDATE, hallucinated);
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, {
+      ...FACTS,
+      requiredSkills: ["Python", "Node.js"],
+    });
 
     const match = await prisma.jobMatch.findFirst({ where: { jobId } });
     expect(match?.strongestMatchingSkills).toEqual(["Node.js", "React"]);
     expect(match?.missingSkills).toEqual(["Python"]);
-    expect(match?.concerns).toEqual([
-      "Small team",
-      "Model claimed matching skills not in the candidate profile (Python) — its explanation may be unreliable",
-    ]);
+    expect(match?.whyMatches).toMatch(/^Matches 1 of 2 required skills \(Node\.js\)\./);
+    expect(match?.applicationRecommendation).toMatch(
+      /^(strong_apply|apply|consider|skip|needs_review)$/,
+    );
   });
 
   it("replaces an earlier failed attempt's match on retry and counts every attempt", async () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
-    const failed: JobAnalysisResult = { ...ANALYSIS, analysisError: "timeout" };
+    const failed: JobFacts = { ...FACTS, analysisError: "timeout" };
 
     await saveJobMatch(jobId, makeJob(), CANDIDATE, failed);
-    await saveJobMatch(jobId, makeJob(), CANDIDATE, ANALYSIS);
+    await saveJobMatch(jobId, makeJob(), CANDIDATE, FACTS);
 
     const matches = await prisma.jobMatch.findMany({ where: { jobId } });
     expect(matches).toHaveLength(1);
@@ -181,10 +171,10 @@ describe("saveJobMatch", () => {
   it("stores UNKNOWN eligibility as null, not true or false", async () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
-    const unknownAnalysis: JobAnalysisResult = {
-      ...ANALYSIS,
+    const unknownAnalysis: JobFacts = {
+      ...FACTS,
       eligibility: {
-        ...ANALYSIS.eligibility,
+        ...FACTS.eligibility,
         indiaEligible: "UNKNOWN",
         worldwideRemote: "UNKNOWN",
       },
@@ -201,7 +191,7 @@ describe("saveJobMatch", () => {
     const ids = await saveNewJobs([makeJob()]);
     const jobId = [...ids.values()][0];
 
-    const result = await saveJobMatch(jobId, makeJob(), CANDIDATE, ANALYSIS);
+    const result = await saveJobMatch(jobId, makeJob(), CANDIDATE, FACTS);
 
     const [match, job] = await Promise.all([
       prisma.jobMatch.findFirst({ where: { jobId } }),

@@ -3,7 +3,7 @@ import { normalizeGreenhouseJob } from "../sources/greenhouse/normalize";
 import { filterNewJobs, dedupeKey } from "./dedupe";
 import { passesHardFilters } from "./filters";
 import { analyzeJob } from "../agent/analyze-job";
-import type { PriorityTier, JobAnalysisResult } from "./scoring";
+import type { PriorityTier, JobFacts } from "./scoring";
 import { getCandidateProfile } from "../db/candidate-profile";
 import { getExistingDedupeKeys, saveNewJobs, getJobsPendingAnalysis } from "../db/jobs";
 import { saveJobMatch } from "../db/job-matches";
@@ -37,8 +37,8 @@ function formatSalary(job: Job): string {
   return `${job.salaryMin ?? "?"}-${job.salaryMax ?? "?"} ${job.salaryCurrency ?? ""}`.trim();
 }
 
-function summarizeEligibility(analysis: JobAnalysisResult): string {
-  const { indiaEligible, worldwideRemote } = analysis.eligibility;
+function summarizeEligibility(facts: JobFacts): string {
+  const { indiaEligible, worldwideRemote } = facts.eligibility;
   if (indiaEligible === true) return "India-eligible";
   if (worldwideRemote === true) return "Worldwide";
   if (indiaEligible === "UNKNOWN" && worldwideRemote === "UNKNOWN") return "Unknown";
@@ -112,8 +112,8 @@ async function executeRun(runId: string): Promise<PipelineResult> {
   let jobsNeedingReview = 0;
   for (const { jobId, job } of toAnalyze) {
     try {
-      const analysis = await analyzeJob(job);
-      const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, analysis);
+      const facts = await analyzeJob(job);
+      const { overallScore, priority } = await saveJobMatch(jobId, job, candidate, facts);
       if (overallScore === null || priority === null) {
         jobsNeedingReview++;
         continue;
@@ -124,7 +124,7 @@ async function executeRun(runId: string): Promise<PipelineResult> {
         company: job.company,
         location: job.locations.join(", "),
         salary: formatSalary(job),
-        remoteEligibility: summarizeEligibility(analysis),
+        remoteEligibility: summarizeEligibility(facts),
         overallScore,
         priority,
       });

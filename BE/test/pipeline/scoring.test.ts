@@ -11,7 +11,6 @@ import {
   categorize,
   normalizeSkill,
   deriveSkillLists,
-  consistencyConcerns,
 } from "../../src/pipeline/scoring";
 import type { CandidateProfile } from "../../src/types/candidate";
 import type { Job } from "../../src/types/job";
@@ -327,38 +326,5 @@ describe("deriveSkillLists", () => {
   it("dedupes skills listed as both required and preferred", () => {
     const facts = makeFacts({ requiredSkills: ["React"], preferredSkills: ["react"] });
     expect(deriveSkillLists(CANDIDATE, facts).strongestMatchingSkills).toEqual(["React"]);
-  });
-});
-
-describe("consistencyConcerns", () => {
-  it("flags a model that credits the candidate with matching skills not in their profile", () => {
-    // Real run: the model claimed Python/Rails as the candidate's strongest
-    // matches (and said so in whyMatches) though the profile has neither.
-    const facts = makeFacts({
-      requiredSkills: ["Python", "Ruby on Rails", "Node.js"],
-      strongestMatchingSkills: ["Python", "Ruby on Rails", "NodeJS"],
-      whyMatches: "Matches the candidate's experience with Python, Ruby on Rails and Node.js.",
-    });
-
-    expect(consistencyConcerns(CANDIDATE, facts, "P2")).toEqual([
-      "Model claimed matching skills not in the candidate profile (Python, Ruby on Rails) — its explanation may be unreliable",
-    ]);
-  });
-
-  it("flags an apply recommendation that contradicts a P3 computed priority", () => {
-    const facts = makeFacts({ applicationRecommendation: "apply", whyMatches: "" });
-    expect(consistencyConcerns(CANDIDATE, facts, "P3")).toEqual([
-      'Model recommended "apply" but the computed priority is P3',
-    ]);
-  });
-
-  it("returns nothing when the explanation and recommendation agree with the profile and score", () => {
-    const facts = makeFacts({
-      requiredSkills: ["Node.js", "Python"],
-      strongestMatchingSkills: ["Node.js"],
-      whyMatches: "Strong Node.js alignment; Python is a gap.",
-      applicationRecommendation: "consider",
-    });
-    expect(consistencyConcerns(CANDIDATE, facts, "P3")).toEqual([]);
   });
 });
