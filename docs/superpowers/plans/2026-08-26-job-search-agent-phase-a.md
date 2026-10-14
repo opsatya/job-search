@@ -3310,20 +3310,20 @@ git commit -m "feat: add agent:run CLI entrypoint with priority/eligibility outp
 
 ---
 
-### Task 15: Phase A end-to-end verification (checkpoint before Phase B)
+### Task 15: Phase A end-to-end verification (checkpoint before Phase B) — **DONE (2026-10-14, commits 195f016..8aaec58)**
 
 **Files:** none created — this task runs the real system and records evidence.
 
 This is the spec's explicit gate (§14): Phase B (LinkedIn/Naukri) must not start until this passes for real, against real Greenhouse data and a real local Postgres.
 
-- [ ] **Step 1: Confirm prerequisites are running**
+- [x] **Step 1: Confirm prerequisites are running**
 
 ```bash
 pg_isready -d "$DATABASE_URL"   # or your local equivalent
 ollama list                      # confirm llama3.1 is present
 ```
 
-- [ ] **Step 2: Run the full test suite**
+- [x] **Step 2: Run the full test suite**
 
 ```bash
 cd BE && npm test
@@ -3331,7 +3331,7 @@ cd BE && npm test
 
 Expected: all tests from Tasks 1–14 pass.
 
-- [ ] **Step 3: Run lint and typecheck**
+- [x] **Step 3: Run lint and typecheck**
 
 ```bash
 cd BE && npm run lint && npm run build
@@ -3339,7 +3339,7 @@ cd BE && npm run lint && npm run build
 
 Expected: no errors.
 
-- [ ] **Step 4: Run the agent for real, twice**
+- [x] **Step 4: Run the agent for real, twice**
 
 ```bash
 cd BE
@@ -3347,7 +3347,7 @@ npm run agent:run 2>&1 | tee /tmp/agent-run-1.log
 npm run agent:run 2>&1 | tee /tmp/agent-run-2.log
 ```
 
-- [ ] **Step 5: Verify zero duplicate rows after the second run**
+- [x] **Step 5: Verify zero duplicate rows after the second run**
 
 ```bash
 psql "$DATABASE_URL" -c 'SELECT "dedupeKey", COUNT(*) FROM jobs GROUP BY "dedupeKey" HAVING COUNT(*) > 1;'
@@ -3357,7 +3357,7 @@ psql "$DATABASE_URL" -c 'SELECT "dedupeKey", COUNT(*) FROM jobs GROUP BY "dedupe
 
 Expected: zero rows returned.
 
-- [ ] **Step 6: Verify the second run found no new jobs (since nothing changed on Greenhouse)**
+- [x] **Step 6: Verify the second run found no new jobs (since nothing changed on Greenhouse)**
 
 Check `/tmp/agent-run-2.log` — `New jobs: 0`, and confirm `agent_runs` has two completed rows via:
 
@@ -3365,7 +3365,7 @@ Check `/tmp/agent-run-2.log` — `New jobs: 0`, and confirm `agent_runs` has two
 psql "$DATABASE_URL" -c 'SELECT "runId", status, "jobsFound", "jobsNew" FROM agent_runs ORDER BY "startedAt";'
 ```
 
-- [ ] **Step 7: Spot-check eligibility and scoring on a real row**
+- [x] **Step 7: Spot-check eligibility and scoring on a real row**
 
 ```bash
 psql "$DATABASE_URL" -c 'SELECT "skillMatch", "locationMatch", "overallScore", priority, "indiaEligible", "worldwideRemote", "eligibilityEvidence" FROM job_matches LIMIT 5;'
@@ -3373,13 +3373,48 @@ psql "$DATABASE_URL" -c 'SELECT "skillMatch", "locationMatch", "overallScore", p
 
 Expected: `"indiaEligible"`/`"worldwideRemote"` are `t`, `f`, or blank (NULL = UNKNOWN) — never all `t` across every row (that would indicate the "never infer UNKNOWN into true" rule isn't holding in practice against real LLM output). `"eligibilityEvidence"` is non-empty for every row. If real output violates this, treat it as a bug in the Task 12 prompt or the Task 8 partial-credit handling, not something to wave through.
 
-- [ ] **Step 8: Report results to the user**
+- [x] **Step 8: Report results to the user**
 
 Share the actual `/tmp/agent-run-1.log` output, the duplicate-check query result, the `agent_runs` table contents, and the Step 7 spot-check. Do not claim Phase A is complete without this evidence (per the org's verification-before-completion practice) — if any step fails, fix the root cause and rerun from Step 2, do not skip ahead.
 
-- [ ] **Step 9: Commit** (only if Steps 4–8 required code fixes; otherwise nothing to commit)
+- [x] **Step 9: Commit** (only if Steps 4–8 required code fixes; otherwise nothing to commit)
 
 ```bash
 git add -A
 git commit -m "fix: <describe whatever the e2e run surfaced>"
 ```
+
+#### Task 15 results (2026-10-14)
+
+**Verdict:** the Phase A gate passes mechanically — real Greenhouse data, real `llama3.1` analysis, real ranked CLI output, zero duplicate rows on rerun. It took ten fixes to get there (below). **Output quality is the open risk:** `llama3.1` (8B, ~66% CPU-offloaded on a 4 GB RTX 3050) produces unreliable extraction and reasoning, now caught and flagged by deterministic guards rather than trusted. Decide on model/prompt quality before Phase B adds more sources.
+
+| Step | Result |
+|---|---|
+| 1 Prerequisites | Postgres accepting connections; `llama3.1:latest` present |
+| 2 Tests | 118/118 passing (17 suites) |
+| 3 Lint + build | clean |
+| 4 Two real runs | run #1 `2026-10-14T13:49:56Z`: 363 found, 11 retried analyses, 0 failures; run #2 `2026-10-14T14:19:26Z`: 363 found, **0 new, 0 analyzed**; run #3 `14:21:53Z` re-checked 2 jobs after the grounding fix. Logs: `~/Desktop/projects/agents-db-backups/agent-run-{1,2,3}.log` |
+| 5 Duplicates | 0 duplicate `jobs.dedupeKey`, 0 jobs with >1 `job_matches` row |
+| 6 `agent_runs` | 5 completed rows (2 from 2026-09-26, runs #1–#3 today); the 2 earlier crashed/killed runs are `failed` — closed during repair (manually, and by the abandoned-run DB test), not yet by a real startup sweep |
+| 7 Eligibility spot-check | 27 scored: indiaEligible 1 true / 1 false / 25 UNKNOWN; worldwideRemote 1 true; every row has non-empty `eligibilityEvidence`. Initially 2 India-true and 6 worldwide-true, of which 5 claims were unsupported by their own evidence → fixed (see 10 below) |
+
+Final data: 458 jobs (429 rejected by hard filters, 27 scored, 2 awaiting analysis retry). Scored: **0 P0, 0 P1, 2 P2** (GitLab Database Change Management 78, GitLab Duo Client SDK 77), 25 P3.
+
+**Fixes this task required** (each with a failing test first):
+1. `candidate-profile.test.ts` wiped the real seeded profile → snapshot/restore.
+2. Greenhouse descriptions are entity-encoded HTML, so tags were never stripped → decode, then strip (≈30% shorter prompts).
+3. Ollama's default 4096-token context silently discarded the top of long prompts (logged as a "context shift") → explicit `num_ctx` (8192), streamed request (avoids Node fetch's 300s headers timeout), reject `done_reason != stop` and full-context generations.
+4. OpenClaw's agent CLI returned prose instead of JSON → direct schema-constrained Ollama call (plan branch 12B).
+5. Failed analyses were scored as if real (a timeout ranked 76/P2) → saved unscored, reported as needs review.
+6. Hard-filtered jobs weren't persisted, so were "new" forever → saved as `rejected`.
+7. Crashed/killed runs stayed `in_progress` → failure capture, SIGINT/SIGTERM/SIGHUP handling, and an abandoned-run sweep at startup (SIGKILL/OOM can't be trapped).
+8. Failed analyses were never retried → retried by later runs up to 3 attempts (`jobs.analysisAttempts`); replaced the one-off backfill script.
+9. Model-reported matching/missing skills were hallucinated (Python/Rails credited to a Node.js candidate) → derived in code; contradictions flagged in `concerns`.
+10. Grounding: an ML role was ranked **P1 (86)** because the model copied the candidate's own skills into its `requiredSkills` (0/11 in the posting); a "Remote, United Kingdom" role came back India- and worldwide-eligible → skills absent from the posting are dropped, mostly-ungrounded extractions are rejected and retried, and `true` eligibility claims need support in the evidence or structured locations, else UNKNOWN.
+
+**Known limitations carried forward:**
+- 25 of 27 scored rows carry at least one deterministic reliability flag; `whyMatches` text should not be trusted on its own.
+- Two Figma postings (ML London, Mobile Web) make `llama3.1` copy the candidate profile on every attempt; they will exhaust retries and remain needs-review. Likely a prompt-ordering/model-capacity issue.
+- 27 rows scored before the skill-grounding fix keep their original skill scores (`experienceRequirementYears` isn't persisted, so they can't be re-scored without re-analysis); their eligibility/location scores were re-graded exactly.
+- Tests share `DATABASE_URL` with real runs; running the full Jest suite concurrently with Ollama on this 16 GB machine OOM-killed Ollama once.
+
