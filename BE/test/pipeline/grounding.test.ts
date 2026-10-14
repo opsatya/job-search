@@ -95,4 +95,67 @@ describe("groundAnalysis", () => {
     const result = groundAnalysis(JOB, analysis({ requiredSkills: ["PostgreSQL"] }));
     expect(result.ok && result.analysis.requiredSkills).toEqual(["PostgreSQL"]);
   });
+
+  describe("eligibility claims", () => {
+    function withEligibility(
+      eligibility: Partial<JobAnalysisResult["eligibility"]>,
+    ): JobAnalysisResult {
+      const base = analysis({});
+      return { ...base, eligibility: { ...base.eligibility, ...eligibility } };
+    }
+
+    it("downgrades true claims to UNKNOWN when the evidence and locations don't support them", () => {
+      // Real run: evidence "Remote, United Kingdom" came back India- and worldwide-eligible.
+      const result = groundAnalysis(
+        { ...JOB, locations: ["Remote, United Kingdom"] },
+        withEligibility({
+          indiaEligible: true,
+          worldwideRemote: true,
+          eligibilityEvidence: "Remote, United Kingdom",
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.analysis.eligibility.indiaEligible).toBe("UNKNOWN");
+      expect(result.analysis.eligibility.worldwideRemote).toBe("UNKNOWN");
+      expect(result.analysis.concerns).toEqual([
+        "Eligibility claims not supported by the posting's evidence or locations, set to UNKNOWN: indiaEligible, worldwideRemote",
+      ]);
+    });
+
+    it("keeps an India claim backed by the job's structured location", () => {
+      const result = groundAnalysis(
+        { ...JOB, locations: ["Bangalore, India"] },
+        withEligibility({
+          indiaEligible: true,
+          eligibilityEvidence: "All of our roles are remote.",
+        }),
+      );
+      expect(result.ok && result.analysis.eligibility.indiaEligible).toBe(true);
+    });
+
+    it("keeps a worldwide claim whose evidence says so", () => {
+      const result = groundAnalysis(
+        JOB,
+        withEligibility({ worldwideRemote: true, eligibilityEvidence: "Remote-Global" }),
+      );
+      expect(result.ok && result.analysis.eligibility.worldwideRemote).toBe(true);
+    });
+
+    it("never changes false or UNKNOWN claims", () => {
+      const result = groundAnalysis(
+        JOB,
+        withEligibility({
+          indiaEligible: false,
+          worldwideRemote: "UNKNOWN",
+          eligibilityEvidence: "US only",
+        }),
+      );
+      expect(result.ok && result.analysis.eligibility).toEqual(
+        expect.objectContaining({ indiaEligible: false, worldwideRemote: "UNKNOWN" }),
+      );
+      expect(result.ok && result.analysis.concerns).toEqual([]);
+    });
+  });
 });
