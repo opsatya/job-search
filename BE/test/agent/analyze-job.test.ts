@@ -1,7 +1,7 @@
 // BE/test/agent/analyze-job.test.ts
 import { analyzeJob } from "../../src/agent/analyze-job";
 import * as candidateProfileModule from "../../src/db/candidate-profile";
-import * as openclawModule from "../../src/agent/openclaw-client";
+import { OllamaProvider } from "../../src/llm/ollama-provider";
 import type { Job } from "../../src/types/job";
 import type { JobAnalysisResult } from "../../src/pipeline/scoring";
 
@@ -41,31 +41,31 @@ const ANALYSIS: JobAnalysisResult = {
   factLabels: { indiaEligible: "FACT" },
 };
 
-describe("analyzeJob (OpenClaw branch)", () => {
-  it("calls OpenClaw with the candidate profile and job, scoped to the analysis tool allowlist", async () => {
+describe("analyzeJob (direct Ollama structured-output branch)", () => {
+  it("calls Ollama with a schema constraint and returns the parsed analysis", async () => {
     jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
       name: "Satyajeet Singh",
     } as never);
-    const runSpy = jest
-      .spyOn(openclawModule, "runOpenClawSession")
-      .mockResolvedValue(JSON.stringify(ANALYSIS));
+    const generateSpy = jest
+      .spyOn(OllamaProvider.prototype, "generateStructured")
+      .mockResolvedValue(ANALYSIS);
 
     const result = await analyzeJob(JOB);
 
-    expect(runSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tools: [],
-        model: "ollama/llama3.1",
-      }),
+    expect(generateSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Software Engineer"),
+      expect.objectContaining({ type: "object" }),
     );
     expect(result).toEqual(ANALYSIS);
   });
 
-  it("falls back to needs_review with UNKNOWN eligibility when OpenClaw returns malformed JSON", async () => {
+  it("falls back to needs_review with UNKNOWN eligibility when the Ollama request fails", async () => {
     jest.spyOn(candidateProfileModule, "getCandidateProfile").mockResolvedValue({
       name: "Satyajeet Singh",
     } as never);
-    jest.spyOn(openclawModule, "runOpenClawSession").mockResolvedValue("not json");
+    jest
+      .spyOn(OllamaProvider.prototype, "generateStructured")
+      .mockRejectedValue(new Error("Failed to parse Ollama response as JSON: not json"));
 
     const result = await analyzeJob(JOB);
 

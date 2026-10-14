@@ -1,7 +1,99 @@
 import { getCandidateProfile } from "../db/candidate-profile";
-import { runOpenClawSession } from "./openclaw-client";
+import { OllamaProvider } from "../llm/ollama-provider";
 import type { Job } from "../types/job";
 import type { JobAnalysisResult } from "../pipeline/scoring";
+
+// Importing candidate-profile (which imports the Prisma client) causes
+// process.env to be populated from BE/.env as a side effect, so these reads
+// see OLLAMA_BASE_URL / OLLAMA_MODEL from .env in normal app usage. Falls
+// back to sane local defaults if unset (e.g. under a test runner that never
+// imports the Prisma client).
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "llama3.1";
+
+// A real end-to-end run (Task 15) found that routing this call through
+// openclaw's conversational `agent` CLI produced free-form prose instead of
+// JSON on every single real invocation — openclaw's agent CLI has no
+// schema/format flag, and the ~27K-char persona/workspace system prompt it
+// injects competes with the "return only JSON" instruction. Calling Ollama's
+// /api/generate directly with a JSON-schema `format` constraint (verified
+// live against llama3.1) reliably returns on-schema JSON, so analysis goes
+// straight to Ollama rather than through openclaw.
+const ollamaProvider = new OllamaProvider({ baseUrl: OLLAMA_BASE_URL, model: OLLAMA_MODEL });
+
+const TRI_STATE_SCHEMA = {
+  type: ["boolean", "string"],
+  enum: [true, false, "UNKNOWN"],
+} as const;
+
+const ANALYSIS_SCHEMA = {
+  type: "object",
+  properties: {
+    requiredSkills: { type: "array", items: { type: "string" } },
+    preferredSkills: { type: "array", items: { type: "string" } },
+    experienceRequirementYears: {
+      type: "object",
+      properties: {
+        min: { type: ["number", "null"] },
+        max: { type: ["number", "null"] },
+      },
+    },
+    seniorityLevel: { type: "string", enum: ["junior", "mid", "senior", "unclear"] },
+    educationRequirement: { type: ["string", "null"] },
+    domain: { type: ["string", "null"] },
+    eligibility: {
+      type: "object",
+      properties: {
+        remoteStatus: { type: "string", enum: ["remote", "hybrid", "onsite", "unclear"] },
+        indiaEligible: TRI_STATE_SCHEMA,
+        worldwideRemote: TRI_STATE_SCHEMA,
+        locationRestriction: { type: ["string", "null"] },
+        visaRequired: TRI_STATE_SCHEMA,
+        relocationRequired: TRI_STATE_SCHEMA,
+        eligibilityConfidence: { type: "string", enum: ["high", "medium", "low"] },
+        eligibilityEvidence: { type: "string" },
+        salaryEvidence: { type: ["string", "null"] },
+      },
+      required: [
+        "remoteStatus",
+        "indiaEligible",
+        "worldwideRemote",
+        "visaRequired",
+        "relocationRequired",
+        "eligibilityConfidence",
+        "eligibilityEvidence",
+      ],
+    },
+    whyMatches: { type: "string" },
+    strongestMatchingSkills: { type: "array", items: { type: "string" } },
+    missingSkills: { type: "array", items: { type: "string" } },
+    experienceGap: { type: ["string", "null"] },
+    concerns: { type: "array", items: { type: "string" } },
+    applicationRecommendation: {
+      type: "string",
+      enum: ["strong_apply", "apply", "consider", "needs_review", "skip"],
+    },
+    interviewTopicsToPrepare: { type: "array", items: { type: "string" } },
+    factLabels: {
+      type: "object",
+      additionalProperties: { type: "string", enum: ["FACT", "INFERENCE", "UNKNOWN"] },
+    },
+  },
+  required: [
+    "requiredSkills",
+    "preferredSkills",
+    "experienceRequirementYears",
+    "seniorityLevel",
+    "eligibility",
+    "whyMatches",
+    "strongestMatchingSkills",
+    "missingSkills",
+    "concerns",
+    "applicationRecommendation",
+    "interviewTopicsToPrepare",
+    "factLabels",
+  ],
+} as const;
 
 const ANALYSIS_INSTRUCTIONS = `You are extracting structured facts from a job posting and assessing fit
 against a candidate profile. You do NOT compute a score — a separate
@@ -104,22 +196,9 @@ Salary: ${job.salaryMin ?? "not disclosed"}-${job.salaryMax ?? "not disclosed"} 
 Description: ${job.description}
 ---END-JOB-DATA---`;
 
-  let raw: string;
   try {
-    raw = await runOpenClawSession({
-      model: "ollama/llama3.1",
-      tools: [], // no tool call is needed — the candidate profile is already
-      // embedded in the prompt text above, and the model's job is to return
-      // JSON as its final reply, not to invoke anything.
-      prompt,
-    });
+    return await ollamaProvider.generateStructured<JobAnalysisResult>(prompt, ANALYSIS_SCHEMA);
   } catch (err) {
-    return needsReviewFallback(`OpenClaw session failed: ${(err as Error).message}`);
-  }
-
-  try {
-    return JSON.parse(raw) as JobAnalysisResult;
-  } catch {
-    return needsReviewFallback(`OpenClaw returned non-JSON output: ${raw.slice(0, 200)}`);
+    return needsReviewFallback(`Ollama analysis request failed: ${(err as Error).message}`);
   }
 }
